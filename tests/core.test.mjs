@@ -67,3 +67,15 @@ test('NDLの書影URLはISBN13から作る', () => {
   assert.equal(ndlThumbUrl('9784121017963'), 'https://ndlsearch.ndl.go.jp/thumbnail/9784121017963.jpg');
   assert.equal(ndlThumbUrl(null), null);
 });
+
+import { coverCandidates, isbn13to10, amazonCoverUrl } from '../js/books.js';
+test('書影の候補: NDL→Amazon(ISBN10/ASIN)', () => {
+  assert.equal(isbn13to10('9784121017963'), '412101796X');
+  assert.equal(isbn13to10('9791234567896'), null);
+  assert.deepEqual(coverCandidates({ isbn13: '9784121017963', itemId: '412101796X' }), [
+    'https://ndlsearch.ndl.go.jp/thumbnail/9784121017963.jpg',
+    'https://m.media-amazon.com/images/P/412101796X.09.MZZZZZZZ.jpg',
+  ]);
+  assert.deepEqual(coverCandidates({ isbn13: null, itemId: 'B0ABCDEF12' }), ['https://m.media-amazon.com/images/P/B0ABCDEF12.09.MZZZZZZZ.jpg']);
+  assert.equal(amazonCoverUrl('bad'), null);
+});

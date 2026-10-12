@@ -1,7 +1,7 @@
 import * as db from './db.js';
 import { parseBooklog } from './booklog.js';
 import { buildIndex } from './related.js';
-import { searchBooks, ndlSubjects, normalizeIsbn, findCover, authorWorks, wikiSummary, relatedLinks } from './books.js';
+import { searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks } from './books.js';
 import * as gemini from './gemini.js';
 import { exportData, importData } from './backup.js';
 
@@ -106,6 +106,7 @@ function setTab(tab) {
 async function load() {
   [state.books, state.notes] = await Promise.all([db.getAll('books'), db.getAll('notes')]);
   state.currentBookId = await db.getMeta('currentBookId');
+  setBooksKey(await db.getMeta('booksKey', ''));
   invalidate();
 }
 
@@ -346,48 +347,87 @@ async function runAi(li, note, mode, label, rerender) {
 }
 
 // ---------- 書影 ----------
-// 画面に入った本だけ書影を探す。見つけたURLは本に保存し、次からは探さない。
+// 候補URLを <img> で順に試し、読めたURLを本に保存する(次からはそれを直接出す)。
+// 全部だめなら Google Books に1冊ずつ問い合わせる。上限(429)に当たったらその日は諦める。
+const COVER_V = 2; // 旧版で「なし」と判定した本も探し直す
+const COVER_RETRY_DAYS = 30;
+
 function coverHtml(b, size = 'sm') {
-  const url = b.cover && b.cover !== 'none' ? b.cover : (b.thumbnail || '');
   const initial = esc((b.title || '').replace(/^[「『(（\s]+/, '').slice(0, 1));
-  return `<span class="cover cover--${size}" data-cover="${esc(b.id || '')}" aria-hidden="true">${url
-    ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
-    : `<span class="cover__ph">${initial}</span>`}</span>`;
+  const saved = b.cover && b.cover !== 'none' ? [b.cover] : [];
+  const stale = b.cover === 'none' && (b.coverV !== COVER_V || Date.now() - Date.parse(b.coverCheckedAt || 0) > COVER_RETRY_DAYS * 864e5);
+  const cands = [...new Set([...saved, ...(b.thumbnail ? [b.thumbnail] : []),
+    ...(b.cover === 'none' && !stale ? [] : coverCandidates(b))])];
+  const ph = `<span class="cover__ph">${initial}</span>`;
+  if (!cands.length) return `<span class="cover cover--${size}" aria-hidden="true">${ph}</span>`;
+  return `<span class="cover cover--${size}" data-cover="${esc(b.id || '')}" data-cands="${esc(cands.slice(1).join(' '))}" aria-hidden="true">${ph}<img src="${esc(cands[0])}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`;
 }
 
-const coverQueue = [];
-let coverActive = 0;
-const coverObserver = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
-  for (const e of entries) {
-    if (!e.isIntersecting) continue;
-    coverObserver.unobserve(e.target);
-    coverQueue.push(e.target);
+function coverLoaded(img) {
+  const box = img.parentElement;
+  // Amazonは画像がないと1×1のGIFを返すので、小さすぎる画像は失敗扱い
+  if (img.naturalWidth <= 2) return coverFailed(img);
+  box.classList.add('has-img');
+  const b = bookById(box.dataset.cover);
+  if (b && b.cover !== img.src) {
+    b.cover = img.src;
+    b.coverV = COVER_V;
+    b.coverCheckedAt = new Date().toISOString();
+    db.put('books', b); // 並び順を変えないよう updatedAt は触らない
   }
-  pumpCovers();
-}, { rootMargin: '200px' }) : null;
-
-function hydrateCovers(root) {
-  if (!coverObserver || !navigator.onLine) return;
-  root.querySelectorAll('[data-cover]').forEach(el => {
-    const b = bookById(el.dataset.cover);
-    if (b && !b.cover && !el.querySelector('img')) coverObserver.observe(el);
-  });
 }
 
-async function pumpCovers() {
-  while (coverActive < 3 && coverQueue.length) {
-    const el = coverQueue.shift();
-    const b = bookById(el.dataset.cover);
-    if (!b || b.cover) continue;
-    coverActive++;
-    findCover(b).then(async url => {
-      if (!url) return; // 通信エラー: 次回また探す
-      b.cover = url;
+function coverFailed(img) {
+  const box = img.parentElement;
+  const rest = (box.dataset.cands || '').split(' ').filter(Boolean);
+  if (rest.length) {
+    box.dataset.cands = rest.slice(1).join(' ');
+    img.src = rest[0];
+    return;
+  }
+  img.remove();
+  box.classList.remove('has-img');
+  const b = bookById(box.dataset.cover);
+  if (b) queueGoogleCover(b);
+}
+
+// <img> の load/error はバブリングしないので、捕捉フェーズでまとめて受ける
+document.addEventListener('load', e => { if (e.target.tagName === 'IMG' && e.target.parentElement?.classList.contains('cover')) coverLoaded(e.target); }, true);
+document.addEventListener('error', e => { if (e.target.tagName === 'IMG' && e.target.parentElement?.classList.contains('cover')) coverFailed(e.target); }, true);
+
+const googleQueue = [];
+const googleQueued = new Set();
+let googleBusy = false;
+let googleBlocked = false;
+
+function queueGoogleCover(b) {
+  if (googleBlocked || googleQueued.has(b.id) || !navigator.onLine) return;
+  googleQueued.add(b.id);
+  googleQueue.push(b);
+  pumpGoogle();
+}
+
+async function pumpGoogle() {
+  if (googleBusy) return;
+  googleBusy = true;
+  while (googleQueue.length && !googleBlocked) {
+    const b = googleQueue.shift();
+    try {
+      const url = await googleCover(b);
+      b.cover = url || 'none';
+      b.coverV = COVER_V;
       b.coverCheckedAt = new Date().toISOString();
-      await db.put('books', b); // 並び順を変えないよう updatedAt は触らない
-      if (url !== 'none') document.querySelectorAll(`[data-cover="${CSS.escape(b.id)}"]`).forEach(x => { x.innerHTML = `<img src="${esc(url)}" alt="" referrerpolicy="no-referrer">`; });
-    }).finally(() => { coverActive--; pumpCovers(); });
+      await db.put('books', b);
+      if (url) document.querySelectorAll(`[data-cover="${CSS.escape(b.id)}"]`).forEach(x => {
+        x.dataset.cands = '';
+        x.insertAdjacentHTML('beforeend', `<img src="${esc(url)}" alt="" referrerpolicy="no-referrer">`);
+      });
+    } catch (e) {
+      if (e.status === 429 || e.status === 403) googleBlocked = true; // 今回は諦める(保存しないので次回また試す)
+    }
+    await new Promise(r => setTimeout(r, 400));
   }
+  googleBusy = false;
 }
 
 // ---------- 本棚 ----------
@@ -430,7 +470,6 @@ function renderShelf() {
     again.setSelectionRange(pos, pos);
   });
   $view.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => { shelfFilter = b.dataset.f; renderShelf(); }));
-  hydrateCovers($view);
 }
 
 // ---------- 本を追加 ----------
@@ -529,10 +568,10 @@ function renderBook(id) {
     <section class="list-section" id="author-section" ${book.author ? '' : 'hidden'}>
       <h2 class="list-section__header">${esc(firstName(book.author))}の他の作品</h2>
       <div id="author-wiki"></div>
+      <div id="author-mine"></div>
       <div id="author-works"><p class="list-section__footer">探しています…</p></div>
     </section>
     <div class="actions"><button class="btn btn--plain" id="b-ndl">国立国会図書館の件名を補う</button></div>`;
-  hydrateCovers($view);
   if (book.author) loadAuthor(book);
   const update = async () => {
     book.status = document.getElementById('b-status').value;
@@ -579,27 +618,38 @@ async function loadAuthor(book) {
   const name = firstName(book.author);
   const box = document.getElementById('author-works');
   const wikiBox = document.getElementById('author-wiki');
-  if (!navigator.onLine) { box.innerHTML = `<p class="list-section__footer">オフラインのため表示できません。</p>`; return; }
+  const mineBox = document.getElementById('author-mine');
+  const norm = s => (s || '').normalize('NFKC').replace(/[\s(（:：].*$/, '').toLowerCase();
+  const nameKey = name.replace(/\s/g, '');
+
+  // 1) 本棚にある同じ著者の本(端末内なので必ず出る)
+  const mine = state.books.filter(b => b.id !== book.id && (b.author || '').replace(/\s/g, '').includes(nameKey));
+  if (mine.length) {
+    mineBox.innerHTML = `<p class="list-section__footer" style="margin-bottom:var(--space-2)">本棚にある本 ${mine.length}冊</p>
+      <ul class="list list--inset">${mine.map(b => `<li><a class="list__row" href="#book/${esc(b.id)}" style="color:inherit;text-decoration:none">
+        ${coverHtml(b)}<div class="list__text"><span class="list__title">${esc(b.title)}</span>
+        <span class="list__subtitle">${esc([STATUS_LABEL[b.status], b.year].filter(Boolean).join(' ・ '))}</span></div></a></li>`).join('')}</ul>`;
+  }
+
+  // 2) ネットで探す他の作品
+  if (!navigator.onLine) { box.innerHTML = `<p class="list-section__footer">オフラインのため、ほかの作品は探せません。</p>`; return; }
   try {
     if (!authorCache.has(name)) authorCache.set(name, Promise.all([authorWorks(name), wikiSummary(name)]));
-    const [works, wiki] = await authorCache.get(name);
+    const [{ works, source }, wiki] = await authorCache.get(name);
     if (!document.body.contains(box)) return; // 画面を離れた
     if (wiki) {
       wikiBox.innerHTML = `<div class="card author-wiki"><p class="small" style="margin:0">${esc(wiki.extract.slice(0, 160))}${wiki.extract.length > 160 ? '…' : ''}</p>
         <a class="small" href="${esc(wiki.url)}" target="_blank" rel="noopener" style="color:var(--color-accent);text-decoration:none">Wikipediaで読む</a></div>`;
     }
-    const norm = s => (s || '').normalize('NFKC').replace(/[\s(（].*$/, '').toLowerCase();
-    const others = works.filter(w => norm(w.title) !== norm(book.title) && !(w.isbn13 && w.isbn13 === book.isbn13));
-    if (!others.length) { box.innerHTML = `<p class="list-section__footer">他の作品は見つかりませんでした。</p>`; return; }
-    box.innerHTML = `<ul class="list list--inset" style="margin-top:var(--space-3)">${others.map((w, i) => {
-      const mine = state.books.find(b => (w.isbn13 && b.isbn13 === w.isbn13) || norm(b.title) === norm(w.title));
-      const badge = mine ? STATUS_LABEL[mine.status] : '';
-      return `<li class="list__row">${coverHtml({ ...w, id: '' })}
+    const inShelf = w => state.books.find(b => (w.isbn13 && b.isbn13 === w.isbn13) || norm(b.title) === norm(w.title));
+    const others = works.filter(w => norm(w.title) !== norm(book.title) && !(w.isbn13 && w.isbn13 === book.isbn13) && !inShelf(w));
+    if (!others.length) { box.innerHTML = `<p class="list-section__footer">本棚にない作品は見つかりませんでした。</p>`; return; }
+    box.innerHTML = `<p class="list-section__footer" style="margin:var(--space-4) 0 var(--space-2)">まだ読んでいない作品 ${others.length}冊</p>
+      <ul class="list list--inset">${others.map((w, i) => `<li class="list__row">${coverHtml({ ...w, id: '' })}
         <div class="list__text"><span class="list__title">${esc(w.title)}</span>
         <span class="list__subtitle">${esc([w.year, w.publisher].filter(Boolean).join(' ・ '))}</span></div>
-        ${mine ? `<a class="btn btn--small btn--plain" href="#book/${esc(mine.id)}">${esc(badge)}</a>`
-          : `<button class="btn btn--small btn--tinted" data-want="${i}">読みたい</button>`}</li>`;
-    }).join('')}</ul><p class="list-section__footer">Google Booksの情報です。同名の別人の本が混じることがあります。</p>`;
+        <button class="btn btn--small btn--tinted" data-want="${i}">読みたい</button></li>`).join('')}</ul>
+      <p class="list-section__footer">${esc(source)}の情報です。同名の別人の本が混じることがあります。</p>`;
     box.querySelectorAll('[data-want]').forEach(btn => btn.addEventListener('click', async () => {
       const w = others[Number(btn.dataset.want)];
       await saveBook({
@@ -612,7 +662,7 @@ async function loadAuthor(book) {
     }));
   } catch (e) {
     authorCache.delete(name);
-    box.innerHTML = `<p class="list-section__footer">${esc(e.message)}</p>`;
+    box.innerHTML = `<p class="list-section__footer">ほかの作品を探せませんでした(${esc(e.message)})。${e.status === 429 ? '設定でGoogle BooksのAPIキーを入れると安定します。' : ''}</p>`;
   }
 }
 
@@ -639,9 +689,10 @@ function renderNotes() {
 async function renderSettings() {
   setTab('settings');
   setTitle('設定');
-  const [key, model, lastBackup, persisted] = await Promise.all([
+  const [key, model, lastBackup, persisted, booksKey] = await Promise.all([
     db.getMeta('geminiKey', ''), db.getMeta('geminiModel', ''), db.getMeta('lastBackupAt'),
     navigator.storage && navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false),
+    db.getMeta('booksKey', ''),
   ]);
   const imported = state.books.filter(b => b.source === 'booklog').length;
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
@@ -666,6 +717,14 @@ async function renderSettings() {
       </div>
       <p class="list-section__footer">無料枠では、送った内容がGoogleの製品改善に使われ、人が読むこともあります。AIに送るのは、メモの「問い返す」などを押したときだけです。キーはこの端末にだけ保存され、書き出しファイルにも含まれません。</p>
     </section>
+    <section class="list-section"><h2 class="list-section__header">書影と本の情報</h2>
+      <div class="card">
+        <div class="row"><label for="b-key">Google Books キー</label><input id="b-key" type="password" autocomplete="off" value="${esc(booksKey)}" placeholder="任意"></div>
+      </div>
+      <p class="list-section__footer">書影は国立国会図書館とAmazonの画像を使い、キーは要りません。Google Booksはキーなしだと世界中の利用者で上限を分け合うため、よく止まります。Google CloudでBooks APIを有効にしたキー(無料)を入れると、本の検索と著者の作品一覧が安定します。</p>
+      <div class="actions"><button class="btn btn--tinted" id="diag">接続を確かめる</button></div>
+      <div id="diag-out"></div>
+    </section>
     <section class="list-section"><h2 class="list-section__header">このアプリについて</h2>
       <p class="list-section__footer">本 ${state.books.length}冊 ・ メモ ${state.notes.length}件。書誌の検索にGoogle Books APIと国立国会図書館サーチのAPIを利用しています。</p>
     </section>`;
@@ -689,7 +748,40 @@ async function renderSettings() {
     toast('保存しました');
   };
   document.getElementById('g-key').addEventListener('change', saveKey);
+  document.getElementById('b-key').addEventListener('change', async e => {
+    const k = e.target.value.trim();
+    await db.setMeta('booksKey', k);
+    setBooksKey(k);
+    toast('保存しました');
+  });
+  document.getElementById('diag').addEventListener('click', runDiagnostics);
   document.getElementById('g-model').addEventListener('change', saveKey);
+}
+
+// 実機で何が届いて何が止まっているかを一覧する
+async function runDiagnostics() {
+  const out = document.getElementById('diag-out');
+  const sample = state.books.find(b => b.isbn13) || { isbn13: '9784101001616', itemId: '4101001618', title: '', author: '' };
+  const img = url => new Promise(res => {
+    const i = new Image();
+    const t = setTimeout(() => res('時間切れ'), 10000);
+    i.onload = () => { clearTimeout(t); res(i.naturalWidth > 2 ? `OK(${i.naturalWidth}×${i.naturalHeight})` : '画像なし'); };
+    i.onerror = () => { clearTimeout(t); res('読めない'); };
+    i.referrerPolicy = 'no-referrer';
+    i.src = url;
+  });
+  const http = async url => { try { const r = await fetch(url); return r.ok ? 'OK' : `HTTP ${r.status}`; } catch (e) { return `通信できない(${e.message})`; } };
+  const key = await db.getMeta('booksKey', '');
+  const checks = [
+    ['国立国会図書館の書影', () => img(`https://ndlsearch.ndl.go.jp/thumbnail/${sample.isbn13}.jpg`)],
+    ['Amazonの書影', () => img(`https://m.media-amazon.com/images/P/${sample.itemId || isbn13to10(sample.isbn13)}.09.MZZZZZZZ.jpg`)],
+    ['Google Books', () => http(`https://www.googleapis.com/books/v1/volumes?q=isbn:${sample.isbn13}${key ? `&key=${encodeURIComponent(key)}` : ''}`)],
+    ['国立国会図書館サーチ', () => http(`https://ndlsearch.ndl.go.jp/api/opensearch?isbn=${sample.isbn13}&cnt=1`)],
+    ['Wikipedia', () => http('https://ja.wikipedia.org/api/rest_v1/page/summary/%E5%A4%8F%E7%9B%AE%E6%BC%B1%E7%9F%B3')],
+  ];
+  out.innerHTML = `<ul class="list list--inset">${checks.map(([label], i) => `<li class="list__row"><div class="list__text"><span class="list__title">${label}</span></div><span class="list__value" id="diag-${i}">確認中…</span></li>`).join('')}</ul>
+    <p class="list-section__footer">確かめた本: ${esc(sample.title || '新潮文庫の見本')}</p>`;
+  await Promise.all(checks.map(async ([, fn], i) => { document.getElementById(`diag-${i}`).textContent = await fn(); }));
 }
 
 async function importBooklog(buffer) {

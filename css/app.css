@@ -74,8 +74,8 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .field:focus-visible, .row input:focus-visible, .row select:focus-visible, .reunion__reply textarea:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 6px; }
 
 /* 書影 */
-.cover { flex: none; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 4px; background-color: var(--bg-fill-tertiary); }
-.cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover { position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 4px; background-color: var(--bg-fill-tertiary); }
+.cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .cover--sm { width: 40px; height: 58px; }
 .cover--lg { width: 96px; height: 140px; border-radius: 6px; }
 .cover__ph { font-size: 17px; font-weight: 600; color: var(--color-label-tertiary); }

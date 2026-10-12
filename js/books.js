@@ -33,10 +33,9 @@ function fromGoogle(item) {
 export async function searchBooks(query) {
   const isbn = normalizeIsbn(query);
   const q = isbn ? `isbn:${isbn}` : query;
-  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10&langRestrict=ja`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`書誌検索に失敗しました (${res.status})`);
-  const data = await res.json();
+  let data;
+  try { data = await googleBooks(`q=${encodeURIComponent(q)}&maxResults=10&langRestrict=ja`); }
+  catch (e) { throw new Error(`書誌検索に失敗しました(${e.message})`); }
   return (data.items || []).map(fromGoogle).filter(b => b.title);
 }
 
@@ -65,23 +64,43 @@ export async function ndlSubjects({ isbn13, title, author }) {
   }
 }
 
+// ---------- Google Books ----------
+// キーなしの呼び出しは世界中の利用者で1日の上限を分け合っていて、すぐ 429 になる。
+// 設定で自分のキー(無料、1日1000回)を入れればそれを使う。
+let booksKey = '';
+export function setBooksKey(k) { booksKey = (k || '').trim(); }
+
+export async function googleBooks(params) {
+  const url = `https://www.googleapis.com/books/v1/volumes?${params}${booksKey ? `&key=${encodeURIComponent(booksKey)}` : ''}`;
+  const res = await fetch(url);
+  if (res.status === 429) { const e = new Error('Google Booksの1日の上限に達しています'); e.status = 429; throw e; }
+  if (!res.ok) { const e = new Error(`Google Books ${res.status}`); e.status = res.status; throw e; }
+  return res.json();
+}
+
 // ---------- 書影 ----------
-// 1) 国立国会図書館サーチの書影API(ISBNがある本。非営利は申請不要)
-// 2) Google Books(ISBNがない電子書籍などは書名と著者で探す)
+// 画像のURLを候補として並べ、<img> で順に試す(読めなければ次へ)。APIもキーも使わない。
+// 1) 国立国会図書館サーチの書影(ISBNのある本。非営利は申請不要)
+// 2) Amazonの商品画像(ブクログのアイテムIDはISBN10かASINなので、Kindle本も出る)
 export function ndlThumbUrl(isbn13) {
   return isbn13 ? `https://ndlsearch.ndl.go.jp/thumbnail/${isbn13}.jpg` : null;
 }
 
-// 画像として読めるかを確かめる(書影がないとNDLはXMLのエラーを返す)
-export function probeImage(url, timeout = 8000) {
-  return new Promise(resolve => {
-    if (!url) return resolve(false);
-    const img = new Image();
-    const t = setTimeout(() => { img.src = ''; resolve(false); }, timeout);
-    img.onload = () => { clearTimeout(t); resolve(img.naturalWidth > 10); };
-    img.onerror = () => { clearTimeout(t); resolve(false); };
-    img.src = url;
-  });
+export function isbn13to10(isbn13) {
+  if (!isbn13 || !/^978\d{10}$/.test(isbn13)) return null;
+  return isbn13.slice(3, 12) + isbn10Check(isbn13);
+}
+
+export function amazonCoverUrl(id) {
+  return id && /^[0-9A-Z]{10}$/.test(id) ? `https://m.media-amazon.com/images/P/${id}.09.MZZZZZZZ.jpg` : null;
+}
+
+export function coverCandidates(book) {
+  return [...new Set([
+    ndlThumbUrl(book.isbn13),
+    amazonCoverUrl(book.itemId),
+    amazonCoverUrl(isbn13to10(book.isbn13)),
+  ].filter(Boolean))];
 }
 
 function shortTitle(title) {
@@ -92,11 +111,10 @@ function firstAuthor(author) {
   return (author || '').split(/[,、/／]/)[0].replace(/\s+/g, ' ').trim();
 }
 
+// 候補がすべて外れたときの最後の手段。見つからなければ null、通信の失敗は例外。
 export async function googleCover({ isbn13, title, author }) {
   const q = isbn13 ? `isbn:${isbn13}` : `intitle:${shortTitle(title)}${author ? ` inauthor:${firstAuthor(author).replace(/\s/g, '')}` : ''}`;
-  const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=3`);
-  if (!res.ok) throw new Error(`Google Books ${res.status}`);
-  const data = await res.json();
+  const data = await googleBooks(`q=${encodeURIComponent(q)}&maxResults=3`);
   for (const item of data.items || []) {
     const links = (item.volumeInfo || {}).imageLinks;
     if (links && links.thumbnail) return links.thumbnail.replace('http://', 'https://').replace('&edge=curl', '');
@@ -104,41 +122,78 @@ export async function googleCover({ isbn13, title, author }) {
   return null;
 }
 
-// 見つからなければ 'none' を返す(何度も探しに行かないため)
-export async function findCover(book) {
-  const ndl = ndlThumbUrl(book.isbn13);
-  if (ndl && await probeImage(ndl)) return ndl;
-  try {
-    const g = await googleCover(book);
-    if (g && await probeImage(g)) return g;
-  } catch {
-    return null; // 通信エラーは次回また試す
-  }
-  return 'none';
-}
-
 // ---------- 著者の他の作品 ----------
-export async function authorWorks(author, limit = 20) {
-  const name = firstAuthor(author);
-  if (!name) return [];
-  const q = `inauthor:"${name}"`;
-  const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=40&orderBy=newest&printType=books`);
-  if (!res.ok) throw new Error(`著者の作品を取得できませんでした (${res.status})`);
-  const data = await res.json();
+// Google Books で探し、使えなければ国立国会図書館サーチで探す。
+const titleKey = s => (s || '').normalize('NFKC').replace(/[\s(（:：].*$/, '').toLowerCase();
+
+function dedupe(list, name, limit) {
   const seen = new Set();
   const out = [];
-  const key = s => s.normalize('NFKC').replace(/[\s(（].*$/, '').toLowerCase();
-  for (const item of data.items || []) {
-    const b = fromGoogle(item);
-    // 著者名が本当に含まれるものだけ(同姓などの混入を除く)
-    if (!b.author.replace(/\s/g, '').includes(name.replace(/\s/g, ''))) continue;
-    const k = key(b.title);
+  const squash = x => x.replace(/[\s,、・]/g, '');
+  const n = squash(name);
+  for (const b of list) {
+    if (!b.title || !squash(b.author).includes(n)) continue; // 同姓などの混入を除く
+    const k = titleKey(b.title);
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(b);
     if (out.length >= limit) break;
   }
   return out;
+}
+
+async function authorWorksGoogle(name, limit) {
+  const data = await googleBooks(`q=${encodeURIComponent(`inauthor:"${name}"`)}&maxResults=40&orderBy=newest&printType=books`);
+  return dedupe((data.items || []).map(fromGoogle), name, limit);
+}
+
+// 「福島, 章, 1936-」「福島章 著」→「福島章」
+function cleanNdlName(s) {
+  let n = (s || '').trim().replace(/,?\s*\d{4}-(\d{4})?$/, '').replace(/\s*(著|編|訳|作|文|絵|監修|編著)$/, '').trim();
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(n)) n = n.replace(/,\s*/g, '');
+  return n;
+}
+
+export function parseNdlItems(xmlText) {
+  const xml = new DOMParser().parseFromString(xmlText, 'application/xml');
+  const out = [];
+  for (const item of xml.getElementsByTagName('item')) {
+    const get = local => [...item.getElementsByTagName('*')].filter(el => el.localName === local);
+    const text = local => (get(local)[0] || {}).textContent || '';
+    const isbn = get('identifier').find(el => /ISBN/.test(el.getAttribute('xsi:type') || ''));
+    out.push({
+      isbn13: isbn ? normalizeIsbn(isbn.textContent) : null,
+      title: text('title').trim(),
+      author: get('creator').map(el => cleanNdlName(el.textContent)).filter(Boolean).join(', '),
+      publisher: text('publisher').trim(),
+      year: (text('issued') || text('date') || '').match(/\d{4}/)?.[0] || '',
+      pages: null, description: '', thumbnail: '',
+    });
+  }
+  return out;
+}
+
+async function authorWorksNdl(name, limit) {
+  const res = await fetch(`https://ndlsearch.ndl.go.jp/api/opensearch?creator=${encodeURIComponent(name)}&mediatype=books&cnt=80`);
+  if (!res.ok) throw new Error(`国立国会図書館サーチ ${res.status}`);
+  const list = parseNdlItems(await res.text()).sort((a, b) => (b.year || '').localeCompare(a.year || ''));
+  return dedupe(list, name, limit);
+}
+
+// 戻り値: { works, source }。両方だめなら最初の失敗理由で例外。
+export async function authorWorks(author, limit = 20) {
+  const name = firstAuthor(author);
+  if (!name) return { works: [], source: '' };
+  let firstErr = null;
+  try {
+    const works = await authorWorksGoogle(name, limit);
+    if (works.length) return { works, source: 'Google Books' };
+  } catch (e) { firstErr = e; }
+  try {
+    return { works: await authorWorksNdl(name, limit), source: '国立国会図書館サーチ' };
+  } catch (e) {
+    throw firstErr || e;
+  }
 }
 
 // ---------- Wikipedia(著者や作品の概要) ----------
