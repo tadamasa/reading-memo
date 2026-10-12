@@ -79,3 +79,18 @@ test('書影の候補: NDL→Amazon(ISBN10/ASIN)', () => {
   assert.deepEqual(coverCandidates({ isbn13: null, itemId: 'B0ABCDEF12' }), ['https://m.media-amazon.com/images/P/B0ABCDEF12.09.MZZZZZZZ.jpg']);
   assert.equal(amazonCoverUrl('bad'), null);
 });
+
+import { ndcToCategory, DEFAULT_CATEGORIES, parseClassifyResult, parseCategories } from '../js/categories.js';
+test('カテゴリ: NDCからの対応とAIの返答の読み取り', () => {
+  assert.equal(ndcToCategory('913.6', DEFAULT_CATEGORIES), '小説・文学');
+  assert.equal(ndcToCategory('914.6', DEFAULT_CATEGORIES), 'エッセイ・ノンフィクション');
+  assert.equal(ndcToCategory('493.7', DEFAULT_CATEGORIES), '医学・健康');
+  assert.equal(ndcToCategory('146.8', DEFAULT_CATEGORIES), '心理・精神医学');
+  assert.equal(ndcToCategory('336', DEFAULT_CATEGORIES), 'ビジネス・経済');
+  assert.equal(ndcToCategory('', DEFAULT_CATEGORIES), null);
+  const books = [{ id: 'x' }, { id: 'y' }, { id: 'z' }];
+  const m = parseClassifyResult('```json\n{"0":"歴史","1":"存在しない","2":"小説・文学"}\n```', books, DEFAULT_CATEGORIES);
+  assert.deepEqual([...m], [['x', '歴史'], ['z', '小説・文学']]);
+  assert.deepEqual(parseCategories('  A\nB\n\nA '), ['A', 'B']);
+  assert.equal(parseCategories('').length, DEFAULT_CATEGORIES.length);
+});

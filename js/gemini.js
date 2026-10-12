@@ -58,3 +58,25 @@ export async function ask({ apiKey, model = DEFAULT_MODEL, mode = 'socratic', bo
   const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
   return parts.map(p => p.text || '').join('').trim();
 }
+
+// 構造化した答え(JSON文字列)を返してもらう。分類など、メモ以外の用途に使う。
+export async function generateJson({ apiKey, model = DEFAULT_MODEL, prompt }) {
+  if (!apiKey) throw new Error('設定でGemini APIキーを入れてください');
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0 },
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const e = new Error(`Geminiの呼び出しに失敗しました: ${data.error ? data.error.message : res.statusText}`);
+    e.status = res.status;
+    throw e;
+  }
+  const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+  return parts.map(p => p.text || '').join('').trim();
+}

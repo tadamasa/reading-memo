@@ -166,3 +166,15 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .hbars__track { display: flex; align-items: center; gap: 6px; }
 .hbars__bar { display: block; height: 14px; min-width: 2px; background: var(--viz-1); border-radius: 0 4px 4px 0; }
 .hbars__val { font-size: 12px; color: var(--color-label-secondary); font-variant-numeric: tabular-nums; }
+
+/* カテゴリ */
+.tag--cat { background: color-mix(in srgb, var(--color-accent) 14%, transparent); color: var(--color-accent); }
+.sort-bar select#shelf-cat, .sort-bar select#stats-cat { max-width: 9em; }
+.heat__cell--sq { aspect-ratio: 1; }
+.cat-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--color-label); }
+.viz-scroll { overflow-x: auto; }
+.cat-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.cat-table th { font-weight: 400; color: var(--color-label-secondary); font-size: 12px; }
+.cat-table th, .cat-table td { text-align: right; padding: 6px 4px; border-bottom: var(--hairline) solid var(--color-separator); white-space: nowrap; }
+.cat-table th:first-child, .cat-table td:first-child { text-align: left; white-space: normal; }
+#cat-list { min-height: 180px; font-size: 15px; line-height: 22px; }

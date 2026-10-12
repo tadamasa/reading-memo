@@ -1,6 +1,7 @@
 import * as db from './db.js';
 import { parseBooklog } from './booklog.js';
 import { buildIndex } from './related.js';
+import { DEFAULT_CATEGORIES, ndcToCategory, parseCategories, buildClassifyPrompt, parseClassifyResult } from './categories.js';
 import { statsHtml, attachTooltips, scoreOf } from './stats.js';
 import { searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, bookSummary, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks } from './books.js';
 import * as gemini from './gemini.js';
@@ -14,6 +15,7 @@ const state = {
   currentBookId: null,
   draftKind: null,
   lastSaved: null, // 保存直後のメモ(再会を出すため)
+  categories: DEFAULT_CATEGORIES,
 };
 
 const FORMAT_LABEL = { paper: '紙', ebook: '電子', audio: 'オーディオ' };
@@ -121,6 +123,7 @@ async function load() {
   shelfSort = (await db.getMeta('shelfSort')) || shelfSort;
   if (!SORTS[shelfSort]) shelfSort = 'added';
   shelfAsc = !!(await db.getMeta('shelfAsc'));
+  state.categories = parseCategories(await db.getMeta('categories', ''));
   invalidate();
 }
 
@@ -449,6 +452,7 @@ let shelfFilter = 'reading';
 let shelfQuery = '';
 let shelfSort = 'added'; // added | finished | published
 let shelfAsc = false;
+let shelfCat = ''; // '' = すべて, '-' = 未分類
 const SORTS = {
   added: { label: '登録日', key: b => dateInput(b.createdAt) },
   finished: { label: '読了日', key: b => dateInput(b.finishedAt) },
@@ -464,6 +468,7 @@ function renderShelf() {
   const list = state.books
     .filter(b => shelfFilter === 'all' || b.status === shelfFilter)
     .filter(b => !q || `${b.title} ${b.author}`.normalize('NFKC').toLowerCase().includes(q))
+    .filter(b => !shelfCat || (shelfCat === '-' ? !b.category : b.category === shelfCat))
     .sort((a, b) => {
       const ka = SORTS[shelfSort].key(a), kb = SORTS[shelfSort].key(b);
       if (!ka !== !kb) return ka ? -1 : 1; // 日付のない本は最後
@@ -479,6 +484,7 @@ function renderShelf() {
     <div class="sort-bar">
       <label for="shelf-sort">並び順</label>
       <select id="shelf-sort">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${k === shelfSort ? 'selected' : ''}>${v.label}</option>`).join('')}</select>
+      <select id="shelf-cat" aria-label="カテゴリで絞り込む"><option value="">全カテゴリ</option>${state.categories.map(c => `<option ${c === shelfCat ? 'selected' : ''}>${esc(c)}</option>`).join('')}<option value="-" ${shelfCat === '-' ? 'selected' : ''}>未分類</option></select>
       <button class="btn btn--small btn--plain" id="shelf-dir" aria-label="並びの向きを切り替える">${shelfAsc ? '古い順 ↑' : '新しい順 ↓'}</button>
     </div>
     <section class="list-section">
@@ -502,6 +508,7 @@ function renderShelf() {
   });
   $view.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => { shelfFilter = b.dataset.f; renderShelf(); }));
   document.getElementById('shelf-sort').addEventListener('change', e => { shelfSort = e.target.value; db.setMeta('shelfSort', shelfSort); renderShelf(); });
+  document.getElementById('shelf-cat').addEventListener('change', e => { shelfCat = e.target.value; renderShelf(); });
   document.getElementById('shelf-dir').addEventListener('click', () => { shelfAsc = !shelfAsc; db.setMeta('shelfAsc', shelfAsc); renderShelf(); });
 }
 
@@ -592,6 +599,7 @@ function renderBook(id) {
       <div>
         <h2>${esc(book.title)}</h2>
         <p class="muted">${esc([book.author, book.publisher, book.year].filter(Boolean).join(' ・ '))}</p>
+        ${book.category ? `<div class="tags tags--cat"><span class="tag tag--cat">${esc(book.category)}${book.categoryBy === 'ai' ? '(AI)' : ''}</span></div>` : ''}
         ${(book.ndc || (book.subjects || []).length) ? `<div class="tags">${book.ndc ? `<span class="tag">NDC ${esc(book.ndc)}</span>` : ''}${(book.subjects || []).map(s => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}
       </div>
     </div>
@@ -603,6 +611,7 @@ function renderBook(id) {
       <div class="row"><label for="b-status">状態</label><select id="b-status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${book.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row"><label for="b-format">媒体</label><select id="b-format">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<option value="${k}" ${book.format === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row"><label for="b-pages">ページ数</label><input id="b-pages" inputmode="numeric" value="${esc(book.pages || '')}"></div>
+      <div class="row"><label for="b-cat">カテゴリ</label><select id="b-cat"><option value="">未分類</option>${[...new Set([...state.categories, ...(book.category ? [book.category] : [])])].map(c => `<option ${c === book.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
       <div class="row score-row"><label for="b-score">評価</label>
         <input id="b-score" type="range" min="1" max="10" step="1" value="${scoreOf(book) || 5}" class="${scoreOf(book) ? '' : 'is-unset'}" aria-valuetext="${scoreOf(book) ? `${scoreOf(book)}点` : '未評価'}">
         <output id="b-score-out" for="b-score">${scoreOf(book) ? `${scoreOf(book)}<small>/10</small>` : '未評価'}</output>
@@ -645,6 +654,15 @@ function renderBook(id) {
     renderBook(id);
   };
   ['b-status', 'b-format', 'b-pages', 'b-added', 'b-started', 'b-finished'].forEach(i => document.getElementById(i).addEventListener('change', update));
+  document.getElementById('b-cat').addEventListener('change', async e => {
+    book.category = e.target.value || null;
+    book.categoryBy = book.category ? 'user' : null;
+    await saveBook(book);
+    const head = $view.querySelector('.book-head--cover > div');
+    head.querySelectorAll('.tags--cat').forEach(t => t.remove());
+    if (book.category) head.querySelector('.muted').insertAdjacentHTML('afterend', `<div class="tags tags--cat"><span class="tag tag--cat">${esc(book.category)}</span></div>`);
+    toast(book.category ? `「${book.category}」にしました` : '未分類にしました');
+  });
   const scoreEl = document.getElementById('b-score');
   const scoreOut = document.getElementById('b-score-out');
   const scoreClear = document.getElementById('b-score-clear');
@@ -799,11 +817,14 @@ function renderNotes() {
 
 // ---------- 分析 ----------
 let statsRange = 'all';
+let statsCat = '';
 function renderStats() {
   setTab('stats');
   setTitle('分析');
-  $view.innerHTML = statsHtml(state.books, statsRange);
+  $view.innerHTML = statsHtml(state.books, statsRange, { categories: state.categories, category: statsCat });
   $view.querySelectorAll('[data-range]').forEach(b => b.addEventListener('click', () => { statsRange = b.dataset.range; renderStats(); }));
+  const cat = document.getElementById('stats-cat');
+  if (cat) cat.addEventListener('change', () => { statsCat = cat.value; renderStats(); });
   if (!$view.dataset.tips) { attachTooltips($view); $view.dataset.tips = '1'; }
 }
 
@@ -838,6 +859,13 @@ async function renderSettings() {
         <div class="row"><label for="g-model">モデル</label><input id="g-model" value="${esc(model)}" placeholder="${gemini.DEFAULT_MODEL}"></div>
       </div>
       <p class="list-section__footer">無料枠では、送った内容がGoogleの製品改善に使われ、人が読むこともあります。AIに送るのは、メモの「問い返す」などを押したときだけです。キーはこの端末にだけ保存され、書き出しファイルにも含まれません。</p>
+    </section>
+    <section class="list-section"><h2 class="list-section__header">カテゴリ</h2>
+      <div class="card"><textarea id="cat-list" class="field" rows="8" aria-label="カテゴリの一覧(1行に1つ)">${esc(state.categories.join('\n'))}</textarea></div>
+      <p class="list-section__footer">1行に1つ。並び順がそのまま選択肢の順になります。名前を変えても、すでに付けた本のカテゴリは変わりません。</p>
+      <div class="card" style="margin-top:var(--space-3)"><p class="small" style="margin:0">未分類 <b id="cat-left">${state.books.filter(b => !b.category).length}</b>冊</p><p class="small muted" id="cat-progress" style="margin:var(--space-1) 0 0"></p></div>
+      <div class="actions"><button class="btn btn--tinted" id="cat-auto">未分類の本をまとめて分類</button></div>
+      <p class="list-section__footer">国立国会図書館の分類(NDC)が分かる本はそれを使い、残りは書名と著者名だけをGeminiに送って分類します(100冊ずつ)。結果は本の詳細でいつでも直せます。</p>
     </section>
     <section class="list-section"><h2 class="list-section__header">書影と本の情報</h2>
       <div class="card">
@@ -877,7 +905,58 @@ async function renderSettings() {
     toast('保存しました');
   });
   document.getElementById('diag').addEventListener('click', runDiagnostics);
+  document.getElementById('cat-list').addEventListener('change', async e => {
+    state.categories = parseCategories(e.target.value);
+    await db.setMeta('categories', state.categories.join('\n'));
+    e.target.value = state.categories.join('\n');
+    toast('カテゴリを保存しました');
+  });
+  document.getElementById('cat-auto').addEventListener('click', autoCategorize);
   document.getElementById('g-model').addEventListener('change', saveKey);
+}
+
+// 未分類の本にカテゴリを付ける。NDC → Gemini(100冊ずつ)の順。手で付けたものは触らない。
+let categorizing = false;
+async function autoCategorize() {
+  if (categorizing) return;
+  const btn = document.getElementById('cat-auto');
+  const progress = text => { const el = document.getElementById('cat-progress'); if (el) el.textContent = text; };
+  const left = () => { const el = document.getElementById('cat-left'); if (el) el.textContent = state.books.filter(b => !b.category).length; };
+  categorizing = true;
+  btn.disabled = true;
+  try {
+    const cats = state.categories;
+    const byNdc = state.books.filter(b => !b.category && b.ndc).map(b => [b, ndcToCategory(b.ndc, cats)]).filter(([, c]) => c);
+    for (const [b, c] of byNdc) { b.category = c; b.categoryBy = 'ndc'; }
+    if (byNdc.length) await db.putMany('books', byNdc.map(([b]) => b));
+    left();
+    const rest = state.books.filter(b => !b.category);
+    if (!rest.length) { progress(`NDCで${byNdc.length}冊を分類しました。`); return; }
+    const apiKey = await db.getMeta('geminiKey');
+    if (!apiKey) { progress(`NDCで${byNdc.length}冊を分類しました。残り${rest.length}冊はGeminiのAPIキーを入れると分類できます。`); return; }
+    const model = (await db.getMeta('geminiModel')) || gemini.DEFAULT_MODEL;
+    let done = 0;
+    for (let i = 0; i < rest.length; i += 100) {
+      const batch = rest.slice(i, i + 100);
+      progress(`Geminiで分類中… ${i}/${rest.length}冊`);
+      let text;
+      try { text = await gemini.generateJson({ apiKey, model, prompt: buildClassifyPrompt(batch, cats) }); }
+      catch (e) {
+        progress(`${done}冊を分類したところで止まりました(${e.message})。もう一度押すと続きから分類します。`);
+        return;
+      }
+      const result = parseClassifyResult(text, batch, cats);
+      const changed = batch.filter(b => result.has(b.id));
+      for (const b of changed) { b.category = result.get(b.id); b.categoryBy = 'ai'; }
+      await db.putMany('books', changed);
+      done += changed.length;
+      left();
+    }
+    progress(`分類しました(NDC ${byNdc.length}冊、Gemini ${done}冊)。分析タブで内訳を見られます。`);
+  } finally {
+    categorizing = false;
+    if (document.body.contains(btn)) btn.disabled = false;
+  }
 }
 
 // 実機で何が届いて何が止まっているかを一覧する

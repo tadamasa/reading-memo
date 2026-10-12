@@ -234,9 +234,13 @@ function tile(label, value, sub = '') {
 // ---------- 画面 ----------
 export const RANGES = [['all', '全期間'], ['10', '10年'], ['5', '5年'], ['year', '今年']];
 
-export function statsHtml(books, range) {
-  const s = computeStats(books, range);
-  const filter = `<div class="segmented-wrap"><div class="segmented" role="tablist">${RANGES.map(([k, l]) => `<button class="segmented__item ${k === range ? 'is-active' : ''}" role="tab" aria-selected="${k === range}" data-range="${k}">${l}</button>`).join('')}</div></div>`;
+export function statsHtml(books, range, { categories = [], category = '' } = {}) {
+  const scoped = category ? books.filter(b => (category === '-' ? !b.category : b.category === category)) : books;
+  const s = computeStats(scoped, range);
+  const cats = categoryStats(computeStats(books, range).read, categories);
+  const hasCats = books.some(b => b.category);
+  const filter = `<div class="segmented-wrap"><div class="segmented" role="tablist">${RANGES.map(([k, l]) => `<button class="segmented__item ${k === range ? 'is-active' : ''}" role="tab" aria-selected="${k === range}" data-range="${k}">${l}</button>`).join('')}</div></div>
+    ${hasCats ? `<div class="sort-bar" style="padding-top:0"><label for="stats-cat">カテゴリ</label><select id="stats-cat"><option value="">すべて</option>${categories.map(c => `<option ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}<option value="-" ${category === '-' ? 'selected' : ''}>未分類</option></select></div>` : ''}`;
   if (!s.read.length) return filter + `<div class="empty"><p class="empty__message">この期間に読了日のある本はありません。</p></div>`;
   const t = s.tiles;
   const n = s.yearList.length;
@@ -267,9 +271,67 @@ export function statsHtml(books, range) {
       table(['年', '平均ページ', '冊数'], s.pagesByYear.map(d => [d.label, d.value === null ? '—' : Math.round(d.value), d.n])))}
     ${card('媒体の内訳', '', stacked(s.formatByYear.map(shortYear), { labelEvery: every }),
       table(['年', ...FORMATS.map(([, l]) => l)], s.formatByYear.map(d => [d.label, ...d.parts])))}
+    ${category ? '' : categorySection(cats, hasCats)}
     ${s.topAuthors.length ? card('よく読む著者', '2冊以上読んだ著者の上位10人。', hbars(s.topAuthors)) : ''}
     ${s.scores.length ? card('評価の分布', 'ブクログの5段階評価は2倍して10点に換算しています。', columns(s.scoreHist, { height: 130 }),
       table(['点', '冊数'], s.scoreHist.map(d => [d.label, d.value]))) : ''}`;
+}
+
+// ---------- カテゴリ ----------
+export function categoryStats(read, categories) {
+  const groups = new Map();
+  for (const b of read) {
+    const c = b.category || '';
+    if (!groups.has(c)) groups.set(c, []);
+    groups.get(c).push(b);
+  }
+  const order = c => { const i = categories.indexOf(c); return i < 0 ? 999 : i; };
+  const rows = [...groups].filter(([c]) => c).map(([c, bs]) => {
+    const pages = bs.map(b => Number(b.pages)).filter(p => p > 0);
+    const gaps = bs.map(b => { const p = yearOf(b.year); return p ? yearOf(b.finishedAt) - p : null; }).filter(g => g !== null && g >= 0);
+    const scores = bs.map(scoreOf).filter(Boolean);
+    return {
+      label: c, value: bs.length, books: bs,
+      avgPages: pages.length ? pages.reduce((x, y) => x + y, 0) / pages.length : null,
+      medianGap: median(gaps),
+      avgScore: scores.length ? scores.reduce((x, y) => x + y, 0) / scores.length : null,
+    };
+  }).sort((a, b) => b.value - a.value || order(a.label) - order(b.label));
+  const years = [...new Set(read.map(b => yearOf(b.finishedAt)))].sort();
+  const totals = new Map(years.map(y => [y, read.filter(b => yearOf(b.finishedAt) === y).length]));
+  return { rows, years, totals, uncategorized: (groups.get('') || []).length };
+}
+
+function categoryHeat(c) {
+  const rows = c.rows.slice(0, 12);
+  const share = (r, y) => { const n = r.books.filter(b => yearOf(b.finishedAt) === y).length; return [n, c.totals.get(y) ? n / c.totals.get(y) : 0]; };
+  const maxShare = Math.max(0.01, ...rows.flatMap(r => c.years.map(y => share(r, y)[1])));
+  const cols = c.years.length;
+  const step = v => v === 0 ? 0 : Math.min(5, Math.ceil((v / maxShare) * 5));
+  const every = cols > 12 ? Math.ceil(cols / 6) : cols > 7 ? 2 : 1;
+  const style = `grid-template-columns: 8.5em repeat(${cols}, 1fr)`;
+  const head = `<div class="heat__row heat__head" style="${style}"><span></span>${c.years.map((y, i) => `<span>${i % every === 0 || i === cols - 1 ? `'${String(y).slice(2)}` : ''}</span>`).join('')}</div>`;
+  const body = rows.map(r => `<div class="heat__row" style="${style}"><span class="heat__y cat-label">${esc(r.label)}</span>${c.years.map(y => {
+    const [n, sh] = share(r, y);
+    return `<span class="heat__cell heat__cell--sq" data-s="${step(sh)}" ${tip(`${n}冊(${Math.round(sh * 100)}%)`, `${y}年・${r.label}`)}></span>`;
+  }).join('')}</div>`).join('');
+  return `<div class="heat">${head}${body}</div>
+    <div class="heat__legend"><span>その年に占める割合 低</span>${[1, 2, 3, 4, 5].map(k => `<span class="heat__cell" data-s="${k}"></span>`).join('')}<span>高</span></div>`;
+}
+
+function categorySection(c, hasCats) {
+  if (!hasCats) {
+    return card('カテゴリ', '', `<p class="viz-empty">まだカテゴリの付いた本がありません。設定の「未分類の本をまとめて分類」で一度に付けられます。</p>`);
+  }
+  if (!c.rows.length) return '';
+  const note = c.uncategorized ? `未分類の${c.uncategorized}冊は含みません。` : '';
+  const fmtOr = (v, f) => v === null ? '—' : f(v);
+  const tableRows = c.rows.map(r => [r.label, r.value, fmtOr(r.avgScore, fmt1), fmtOr(r.avgPages, Math.round), fmtOr(r.medianGap, fmt1)]);
+  return card('カテゴリ別の冊数', note, hbars(c.rows.map(r => ({ label: r.label, value: r.value }))))
+    + (c.years.length >= 2 ? card('カテゴリの移り変わり', 'その年に読んだ本のうち、各カテゴリが占める割合です(冊数の多い12カテゴリ)。', categoryHeat(c)) : '')
+    + card('カテゴリごとの読み方', '刊行→読了は「刊行から読了までの年数」の中央値です。評価は評価済みの本だけの平均。',
+      `<div class="viz-scroll"><table class="cat-table"><thead><tr><th>カテゴリ</th><th>冊数</th><th>評価</th><th>ページ</th><th>刊行→読了</th></tr></thead>
+        <tbody>${tableRows.map(r => `<tr>${r.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
 }
 
 // ツールチップは1つだけ。値を先に太く、項目名を後に。
