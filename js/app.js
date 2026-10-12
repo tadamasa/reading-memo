@@ -43,6 +43,16 @@ function toast(msg, ms = 2600) {
   setTimeout(() => el.remove(), ms);
 }
 
+// 日付欄(<input type="date">)用に、端末の時刻でのYYYY-MM-DDにする
+function dateInput(iso) {
+  if (!iso) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 function fmtDate(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -107,6 +117,9 @@ async function load() {
   [state.books, state.notes] = await Promise.all([db.getAll('books'), db.getAll('notes')]);
   state.currentBookId = await db.getMeta('currentBookId');
   setBooksKey(await db.getMeta('booksKey', ''));
+  shelfSort = (await db.getMeta('shelfSort')) || shelfSort;
+  if (!SORTS[shelfSort]) shelfSort = 'added';
+  shelfAsc = !!(await db.getMeta('shelfAsc'));
   invalidate();
 }
 
@@ -433,6 +446,13 @@ async function pumpGoogle() {
 // ---------- 本棚 ----------
 let shelfFilter = 'reading';
 let shelfQuery = '';
+let shelfSort = 'added'; // added | finished | published
+let shelfAsc = false;
+const SORTS = {
+  added: { label: '登録日', key: b => dateInput(b.createdAt) },
+  finished: { label: '読了日', key: b => dateInput(b.finishedAt) },
+  published: { label: '刊行日', key: b => (b.year || '').replace(/[^\d-]/g, '') },
+};
 
 function renderShelf() {
   setTab('shelf');
@@ -442,7 +462,11 @@ function renderShelf() {
   const list = state.books
     .filter(b => shelfFilter === 'all' || b.status === shelfFilter)
     .filter(b => !q || `${b.title} ${b.author}`.normalize('NFKC').toLowerCase().includes(q))
-    .sort((a, b) => (b.finishedAt || b.updatedAt || b.createdAt || '').localeCompare(a.finishedAt || a.updatedAt || a.createdAt || ''));
+    .sort((a, b) => {
+      const ka = SORTS[shelfSort].key(a), kb = SORTS[shelfSort].key(b);
+      if (!ka !== !kb) return ka ? -1 : 1; // 日付のない本は最後
+      return shelfAsc ? ka.localeCompare(kb) : kb.localeCompare(ka);
+    });
   const counts = Object.fromEntries(filters.map(([k]) => [k, k === 'all' ? state.books.length : state.books.filter(b => b.status === k).length]));
   $view.innerHTML = `
     <label class="search"><span aria-hidden="true">⌕</span><input id="shelf-q" type="search" placeholder="書名・著者で絞り込み" value="${esc(shelfQuery)}" aria-label="本棚を検索"></label>
@@ -450,12 +474,17 @@ function renderShelf() {
       ${filters.map(([k, l]) => `<button class="segmented__item ${k === shelfFilter ? 'is-active' : ''}" role="tab" aria-selected="${k === shelfFilter}" data-f="${k}">${l} ${counts[k]}</button>`).join('')}
     </div></div>
     <div class="pad"><a class="btn btn--tinted btn--large" href="#add">本を追加</a></div>
+    <div class="sort-bar">
+      <label for="shelf-sort">並び順</label>
+      <select id="shelf-sort">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${k === shelfSort ? 'selected' : ''}>${v.label}</option>`).join('')}</select>
+      <button class="btn btn--small btn--plain" id="shelf-dir" aria-label="並びの向きを切り替える">${shelfAsc ? '古い順 ↑' : '新しい順 ↓'}</button>
+    </div>
     <section class="list-section">
       ${list.length ? `<ul class="list list--inset">${list.slice(0, 300).map(b => {
         const n = state.notes.filter(x => x.bookId === b.id).length;
         return `<li><a class="list__row" href="#book/${esc(b.id)}" style="color:inherit;text-decoration:none">
           ${coverHtml(b)}<div class="list__text"><span class="list__title">${esc(b.title)}</span>
-          <span class="list__subtitle">${esc([b.author, FORMAT_LABEL[b.format], b.finishedAt && `${fmtDate(b.finishedAt)}読了`, n && `メモ${n}`].filter(Boolean).join(' ・ '))}</span></div>
+          <span class="list__subtitle">${esc([b.author, shelfDateLabel(b), n && `メモ${n}`].filter(Boolean).join(' ・ '))}</span></div>
           <span class="list__chevron" aria-hidden="true">›</span></a></li>`;
       }).join('')}</ul>${list.length > 300 ? `<p class="list-section__footer">先頭300冊を表示しています。検索で絞り込めます。</p>` : ''}`
       : `<div class="empty"><p class="empty__message">該当する本はありません。設定からブクログの記録を取り込めます。</p></div>`}
@@ -470,6 +499,15 @@ function renderShelf() {
     again.setSelectionRange(pos, pos);
   });
   $view.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => { shelfFilter = b.dataset.f; renderShelf(); }));
+  document.getElementById('shelf-sort').addEventListener('change', e => { shelfSort = e.target.value; db.setMeta('shelfSort', shelfSort); renderShelf(); });
+  document.getElementById('shelf-dir').addEventListener('click', () => { shelfAsc = !shelfAsc; db.setMeta('shelfAsc', shelfAsc); renderShelf(); });
+}
+
+// 並び順に合わせて、一覧に出す日付を変える
+function shelfDateLabel(b) {
+  if (shelfSort === 'published') return b.year ? `${b.year}年刊` : '';
+  if (shelfSort === 'added') return b.createdAt ? `${fmtDate(b.createdAt)}登録` : '';
+  return b.finishedAt ? `${fmtDate(b.finishedAt)}読了` : '';
 }
 
 // ---------- 本を追加 ----------
@@ -562,6 +600,9 @@ function renderBook(id) {
       <div class="row"><label for="b-status">状態</label><select id="b-status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${book.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row"><label for="b-format">媒体</label><select id="b-format">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<option value="${k}" ${book.format === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row"><label for="b-pages">ページ数</label><input id="b-pages" inputmode="numeric" value="${esc(book.pages || '')}"></div>
+      <div class="row"><label for="b-added">登録日</label><input id="b-added" type="date" value="${dateInput(book.createdAt)}"></div>
+      <div class="row"><label for="b-started">読み始めた日</label><input id="b-started" type="date" value="${dateInput(book.startedAt)}"></div>
+      <div class="row"><label for="b-finished">読了日</label><input id="b-finished" type="date" value="${dateInput(book.finishedAt)}"></div>
     </div>
     ${book.status === 'reading' ? `<div class="actions"><a class="btn btn--prominent" href="#write" id="b-write">この本にメモする</a></div>` : ''}
     <section class="list-section"><h2 class="list-section__header">メモ ${notes.length}</h2>
@@ -578,16 +619,25 @@ function renderBook(id) {
     <div class="actions"><button class="btn btn--plain" id="b-ndl">国立国会図書館の件名を補う</button></div>`;
   if (book.author) loadAuthor(book);
   loadSummary(book);
-  const update = async () => {
+  const update = async e => {
     book.status = document.getElementById('b-status').value;
     book.format = document.getElementById('b-format').value;
     book.pages = Number(document.getElementById('b-pages').value) || null;
-    if (book.status === 'done' && !book.finishedAt) book.finishedAt = new Date().toISOString().slice(0, 10);
-    if (book.status === 'reading' && !book.startedAt) book.startedAt = new Date().toISOString().slice(0, 10);
+    const added = document.getElementById('b-added').value;
+    if (added && added !== dateInput(book.createdAt)) book.createdAt = `${added}T00:00:00`;
+    book.startedAt = document.getElementById('b-started').value || null;
+    book.finishedAt = document.getElementById('b-finished').value || null;
+    const today = dateInput(new Date().toISOString());
+    // 状態を「読了」にしたら今日を読了日に、「読書中」にしたら今日を読み始めた日に(空のときだけ)
+    if (book.status === 'done' && !book.finishedAt) book.finishedAt = today;
+    if (book.status === 'reading' && !book.startedAt) book.startedAt = today;
+    // 読了日を入れたら状態も読了に
+    if (e && e.target.id === 'b-finished' && book.finishedAt && (book.status === 'reading' || book.status === 'want')) book.status = 'done';
     await saveBook(book);
+    ['b-status', 'b-started', 'b-finished'].forEach(i => { const el = document.getElementById(i); if (el) el.value = i === 'b-status' ? book.status : dateInput(i === 'b-started' ? book.startedAt : book.finishedAt); });
     renderBook(id);
   };
-  ['b-status', 'b-format', 'b-pages'].forEach(i => document.getElementById(i).addEventListener('change', update));
+  ['b-status', 'b-format', 'b-pages', 'b-added', 'b-started', 'b-finished'].forEach(i => document.getElementById(i).addEventListener('change', update));
   const w = document.getElementById('b-write');
   if (w) w.addEventListener('click', () => { state.currentBookId = book.id; db.setMeta('currentBookId', book.id); });
   document.getElementById('b-ndl').addEventListener('click', async () => {

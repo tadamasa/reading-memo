@@ -284,6 +284,8 @@ export function relatedLinks(book) {
     { group: '書評', label: '読書メーター', url: `https://bookmeter.com/search?keyword=${enc(t)}` },
     { group: '書評', label: 'ネットの書評', url: g(`${ta} 書評`) },
     { group: '書評', label: '新聞の書評(好書好日)', url: g(`site:book.asahi.com ${t}`) },
+    { group: 'SNS', label: 'Xで感想を見る', url: `https://x.com/search?q=${enc(t)}&f=live` },
+    { group: 'SNS', label: 'Xで著者を探す', url: `https://x.com/search?q=${enc(a)}&f=user`, hide: !a },
     { group: '映像化', label: '映画・ドラマ化', url: g(`${t} 映画化 OR ドラマ化 OR 映像化`) },
     { group: '映像化', label: 'Filmarks', url: `https://filmarks.com/search/movies?q=${enc(t)}` },
     { group: '調べる', label: 'Wikipedia', url: `https://ja.wikipedia.org/w/index.php?search=${enc(t)}` },

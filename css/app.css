@@ -93,3 +93,10 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .summary { margin: 0; font-size: 15px; line-height: 23px; white-space: pre-wrap; }
 .summary.is-clamped { display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
 #summary-more { margin-top: var(--space-1); padding-left: 0; }
+
+/* 本棚の並び順 */
+.sort-bar { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4) 0; font-size: 15px; }
+.sort-bar label { color: var(--color-label-secondary); }
+.sort-bar select { min-height: var(--hit); border: none; background: transparent; color: var(--color-accent); font-size: 15px; }
+.sort-bar .btn { margin-left: auto; }
+.row input[type="date"] { -webkit-appearance: none; appearance: none; text-align: right; }
