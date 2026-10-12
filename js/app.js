@@ -1,7 +1,7 @@
 import * as db from './db.js';
 import { parseBooklog } from './booklog.js';
 import { buildIndex } from './related.js';
-import { searchBooks, ndlSubjects, normalizeIsbn } from './books.js';
+import { searchBooks, ndlSubjects, normalizeIsbn, findCover, authorWorks, wikiSummary, relatedLinks } from './books.js';
 import * as gemini from './gemini.js';
 import { exportData, importData } from './backup.js';
 
@@ -345,6 +345,51 @@ async function runAi(li, note, mode, label, rerender) {
   }
 }
 
+// ---------- 書影 ----------
+// 画面に入った本だけ書影を探す。見つけたURLは本に保存し、次からは探さない。
+function coverHtml(b, size = 'sm') {
+  const url = b.cover && b.cover !== 'none' ? b.cover : (b.thumbnail || '');
+  const initial = esc((b.title || '').replace(/^[「『(（\s]+/, '').slice(0, 1));
+  return `<span class="cover cover--${size}" data-cover="${esc(b.id || '')}" aria-hidden="true">${url
+    ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+    : `<span class="cover__ph">${initial}</span>`}</span>`;
+}
+
+const coverQueue = [];
+let coverActive = 0;
+const coverObserver = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    coverObserver.unobserve(e.target);
+    coverQueue.push(e.target);
+  }
+  pumpCovers();
+}, { rootMargin: '200px' }) : null;
+
+function hydrateCovers(root) {
+  if (!coverObserver || !navigator.onLine) return;
+  root.querySelectorAll('[data-cover]').forEach(el => {
+    const b = bookById(el.dataset.cover);
+    if (b && !b.cover && !el.querySelector('img')) coverObserver.observe(el);
+  });
+}
+
+async function pumpCovers() {
+  while (coverActive < 3 && coverQueue.length) {
+    const el = coverQueue.shift();
+    const b = bookById(el.dataset.cover);
+    if (!b || b.cover) continue;
+    coverActive++;
+    findCover(b).then(async url => {
+      if (!url) return; // 通信エラー: 次回また探す
+      b.cover = url;
+      b.coverCheckedAt = new Date().toISOString();
+      await db.put('books', b); // 並び順を変えないよう updatedAt は触らない
+      if (url !== 'none') document.querySelectorAll(`[data-cover="${CSS.escape(b.id)}"]`).forEach(x => { x.innerHTML = `<img src="${esc(url)}" alt="" referrerpolicy="no-referrer">`; });
+    }).finally(() => { coverActive--; pumpCovers(); });
+  }
+}
+
 // ---------- 本棚 ----------
 let shelfFilter = 'reading';
 let shelfQuery = '';
@@ -369,7 +414,7 @@ function renderShelf() {
       ${list.length ? `<ul class="list list--inset">${list.slice(0, 300).map(b => {
         const n = state.notes.filter(x => x.bookId === b.id).length;
         return `<li><a class="list__row" href="#book/${esc(b.id)}" style="color:inherit;text-decoration:none">
-          <div class="list__text"><span class="list__title">${esc(b.title)}</span>
+          ${coverHtml(b)}<div class="list__text"><span class="list__title">${esc(b.title)}</span>
           <span class="list__subtitle">${esc([b.author, FORMAT_LABEL[b.format], b.finishedAt && `${fmtDate(b.finishedAt)}読了`, n && `メモ${n}`].filter(Boolean).join(' ・ '))}</span></div>
           <span class="list__chevron" aria-hidden="true">›</span></a></li>`;
       }).join('')}</ul>${list.length > 300 ? `<p class="list-section__footer">先頭300冊を表示しています。検索で絞り込めます。</p>` : ''}`
@@ -385,6 +430,7 @@ function renderShelf() {
     again.setSelectionRange(pos, pos);
   });
   $view.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => { shelfFilter = b.dataset.f; renderShelf(); }));
+  hydrateCovers($view);
 }
 
 // ---------- 本を追加 ----------
@@ -415,7 +461,7 @@ function renderAdd() {
       if (!found.length) { results.innerHTML = `<p class="pad muted">見つかりませんでした。下から手で登録できます。</p>`; return; }
       results.innerHTML = `<section class="list-section"><ul class="list list--inset">${found.map((b, i) => {
         const dup = state.books.find(x => (b.isbn13 && x.isbn13 === b.isbn13));
-        return `<li class="list__row"><div class="list__text"><span class="list__title">${esc(b.title)}</span>
+        return `<li class="list__row">${coverHtml(b)}<div class="list__text"><span class="list__title">${esc(b.title)}</span>
           <span class="list__subtitle">${esc([b.author, b.publisher, b.year].filter(Boolean).join(' ・ '))}${dup ? ' ・ 登録済み' : ''}</span>
           <div class="note__tools">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<button class="btn btn--small btn--tinted" data-i="${i}" data-format="${k}">${l}で読む</button>`).join('')}</div></div></li>`;
       }).join('')}</ul></section>`;
@@ -437,7 +483,7 @@ async function addBook(info, format) {
   const book = existing || {
     id: db.uid(), isbn13: info.isbn13 || null, title: info.title, author: info.author || '',
     publisher: info.publisher || '', year: info.year || '', pages: info.pages || null,
-    description: info.description || '', tags: [], subjects: [], ndc: null,
+    description: info.description || '', tags: [], subjects: [], ndc: null, cover: info.thumbnail || null,
     createdAt: new Date().toISOString(), source: 'app',
   };
   book.format = format;
@@ -461,10 +507,13 @@ function renderBook(id) {
   const notes = notesOf(book.id);
   const found = reunions({ text: [book.title, (book.subjects || []).join(' '), book.description || ''].join(' '), author: book.author, excludeBookId: book.id });
   $view.innerHTML = `
-    <div class="book-head">
-      <h2>${esc(book.title)}</h2>
-      <p class="muted">${esc([book.author, book.publisher, book.year].filter(Boolean).join(' ・ '))}</p>
-      ${(book.ndc || (book.subjects || []).length) ? `<div class="tags">${book.ndc ? `<span class="tag">NDC ${esc(book.ndc)}</span>` : ''}${(book.subjects || []).map(s => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}
+    <div class="book-head book-head--cover">
+      ${coverHtml(book, 'lg')}
+      <div>
+        <h2>${esc(book.title)}</h2>
+        <p class="muted">${esc([book.author, book.publisher, book.year].filter(Boolean).join(' ・ '))}</p>
+        ${(book.ndc || (book.subjects || []).length) ? `<div class="tags">${book.ndc ? `<span class="tag">NDC ${esc(book.ndc)}</span>` : ''}${(book.subjects || []).map(s => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}
+      </div>
     </div>
     <div class="card">
       <div class="row"><label for="b-status">状態</label><select id="b-status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${book.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
@@ -476,7 +525,15 @@ function renderBook(id) {
       ${notes.length ? `<ul class="list list--inset">${notes.map(n => noteHtml(n, { showBook: n.bookId !== book.id })).join('')}</ul>` : `<p class="list-section__footer">まだメモはありません。</p>`}
     </section>
     ${reunionSection(found, '関連しそうな過去の読書')}
+    ${linksSection(book)}
+    <section class="list-section" id="author-section" ${book.author ? '' : 'hidden'}>
+      <h2 class="list-section__header">${esc(firstName(book.author))}の他の作品</h2>
+      <div id="author-wiki"></div>
+      <div id="author-works"><p class="list-section__footer">探しています…</p></div>
+    </section>
     <div class="actions"><button class="btn btn--plain" id="b-ndl">国立国会図書館の件名を補う</button></div>`;
+  hydrateCovers($view);
+  if (book.author) loadAuthor(book);
   const update = async () => {
     book.status = document.getElementById('b-status').value;
     book.format = document.getElementById('b-format').value;
@@ -499,6 +556,64 @@ function renderBook(id) {
   });
   bindReunion($view, book.id, () => renderBook(id));
   bindNoteTools($view, () => renderBook(id));
+}
+
+function firstName(author) {
+  return (author || '').split(/[,、/／]/)[0].trim();
+}
+
+function linksSection(book) {
+  const links = relatedLinks(book);
+  const groups = [...new Set(links.map(l => l.group))];
+  return `<section class="list-section"><h2 class="list-section__header">関連リンク</h2>
+    <ul class="list list--inset">${groups.map(g => `<li class="list__row links-row">
+      <span class="links-row__group">${esc(g)}</span>
+      <span class="links-row__items">${links.filter(l => l.group === g).map(l => `<a class="btn btn--small btn--tinted" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join('')}</span>
+    </li>`).join('')}</ul>
+    <p class="list-section__footer">各サービスの検索結果を開きます。</p></section>`;
+}
+
+const authorCache = new Map();
+
+async function loadAuthor(book) {
+  const name = firstName(book.author);
+  const box = document.getElementById('author-works');
+  const wikiBox = document.getElementById('author-wiki');
+  if (!navigator.onLine) { box.innerHTML = `<p class="list-section__footer">オフラインのため表示できません。</p>`; return; }
+  try {
+    if (!authorCache.has(name)) authorCache.set(name, Promise.all([authorWorks(name), wikiSummary(name)]));
+    const [works, wiki] = await authorCache.get(name);
+    if (!document.body.contains(box)) return; // 画面を離れた
+    if (wiki) {
+      wikiBox.innerHTML = `<div class="card author-wiki"><p class="small" style="margin:0">${esc(wiki.extract.slice(0, 160))}${wiki.extract.length > 160 ? '…' : ''}</p>
+        <a class="small" href="${esc(wiki.url)}" target="_blank" rel="noopener" style="color:var(--color-accent);text-decoration:none">Wikipediaで読む</a></div>`;
+    }
+    const norm = s => (s || '').normalize('NFKC').replace(/[\s(（].*$/, '').toLowerCase();
+    const others = works.filter(w => norm(w.title) !== norm(book.title) && !(w.isbn13 && w.isbn13 === book.isbn13));
+    if (!others.length) { box.innerHTML = `<p class="list-section__footer">他の作品は見つかりませんでした。</p>`; return; }
+    box.innerHTML = `<ul class="list list--inset" style="margin-top:var(--space-3)">${others.map((w, i) => {
+      const mine = state.books.find(b => (w.isbn13 && b.isbn13 === w.isbn13) || norm(b.title) === norm(w.title));
+      const badge = mine ? STATUS_LABEL[mine.status] : '';
+      return `<li class="list__row">${coverHtml({ ...w, id: '' })}
+        <div class="list__text"><span class="list__title">${esc(w.title)}</span>
+        <span class="list__subtitle">${esc([w.year, w.publisher].filter(Boolean).join(' ・ '))}</span></div>
+        ${mine ? `<a class="btn btn--small btn--plain" href="#book/${esc(mine.id)}">${esc(badge)}</a>`
+          : `<button class="btn btn--small btn--tinted" data-want="${i}">読みたい</button>`}</li>`;
+    }).join('')}</ul><p class="list-section__footer">Google Booksの情報です。同名の別人の本が混じることがあります。</p>`;
+    box.querySelectorAll('[data-want]').forEach(btn => btn.addEventListener('click', async () => {
+      const w = others[Number(btn.dataset.want)];
+      await saveBook({
+        id: db.uid(), isbn13: w.isbn13 || null, title: w.title, author: w.author, publisher: w.publisher,
+        year: w.year, pages: w.pages, description: w.description, tags: [], subjects: [], ndc: null,
+        cover: w.thumbnail || null, format: 'paper', status: 'want', createdAt: new Date().toISOString(), source: 'app',
+      });
+      btn.outerHTML = `<span class="small muted">追加済み</span>`;
+      toast('「読みたい」に追加しました');
+    }));
+  } catch (e) {
+    authorCache.delete(name);
+    box.innerHTML = `<p class="list-section__footer">${esc(e.message)}</p>`;
+  }
 }
 
 // ---------- メモ一覧 ----------

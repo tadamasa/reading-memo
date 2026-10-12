@@ -1,6 +1,6 @@
 // アプリ本体をキャッシュして、電波がなくても開けるようにする。
 // 書誌検索やAIなど外部APIはキャッシュしない。
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `reading-memo-${VERSION}`;
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest',

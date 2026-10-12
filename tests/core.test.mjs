@@ -51,3 +51,19 @@ test('関連検索は共通語の多い本を上位に出し、自分自身は�
   assert.equal(r[0].doc.id, 'a');
   assert.ok(r.every(x => x.doc.id !== 'c'));
 });
+
+import { relatedLinks, ndlThumbUrl } from '../js/books.js';
+
+test('関連リンクは書名からシリーズ名を外し、ブクログはアイテムページを開く', () => {
+  const links = relatedLinks({ title: '犯罪精神医学入門 人はなぜ人を殺せるのか (中公新書)', author: '福島章', isbn13: '9784121017963', itemId: '412101796X' });
+  const yt = links.find(l => l.label === 'YouTubeで探す');
+  assert.ok(decodeURIComponent(yt.url).includes('犯罪精神医学入門 福島章'));
+  assert.ok(!decodeURIComponent(yt.url).includes('中公新書'));
+  assert.equal(links.find(l => l.label === 'ブクログ').url, 'https://booklog.jp/item/1/412101796X');
+  assert.equal(links.find(l => l.label.startsWith('近くの図書館')).url, 'https://calil.jp/book/412101796X');
+});
+
+test('NDLの書影URLはISBN13から作る', () => {
+  assert.equal(ndlThumbUrl('9784121017963'), 'https://ndlsearch.ndl.go.jp/thumbnail/9784121017963.jpg');
+  assert.equal(ndlThumbUrl(null), null);
+});
