@@ -1,0 +1,632 @@
+import * as db from './db.js';
+import { parseBooklog } from './booklog.js';
+import { buildIndex } from './related.js';
+import { searchBooks, ndlSubjects, normalizeIsbn } from './books.js';
+import * as gemini from './gemini.js';
+import { exportData, importData } from './backup.js';
+
+// ---------- 状態 ----------
+const state = {
+  books: [],
+  notes: [],
+  index: null,
+  currentBookId: null,
+  draftKind: null,
+  lastSaved: null, // 保存直後のメモ(再会を出すため)
+};
+
+const FORMAT_LABEL = { paper: '紙', ebook: '電子', audio: 'オーディオ' };
+const STATUS_LABEL = { reading: '読書中', want: '読みたい', done: '読了', stopped: '中断' };
+const KINDS = [
+  ['quote', '引用'], ['impression', '感想'], ['question', '問い'],
+  ['objection', '反論'], ['association', '連想'], ['action', '行動'],
+];
+const KIND_LABEL = Object.fromEntries(KINDS);
+const POS_UNIT = { paper: 'page', ebook: 'loc', audio: 'time' };
+const POS_LABEL = { page: 'ページ', loc: '位置 / %', time: '再生時刻' };
+const POS_PLACEHOLDER = { page: '例 128', loc: '例 1520 または 42%', time: '例 1:23:45' };
+
+const $view = document.getElementById('view');
+
+// ---------- ユーティリティ ----------
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function toast(msg, ms = 2600) {
+  document.querySelectorAll('.toast').forEach(t => t.remove());
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.setAttribute('role', 'status');
+  el.textContent = msg;
+  document.body.append(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function yearsAgo(iso) {
+  if (!iso) return '';
+  const days = (Date.now() - new Date(iso).getTime()) / 864e5;
+  if (days < 30) return '';
+  if (days < 365) return `${Math.round(days / 30)}か月前`;
+  return `${Math.floor(days / 365)}年前`;
+}
+
+function bookById(id) { return state.books.find(b => b.id === id); }
+
+function notesOf(bookId) {
+  return state.notes
+    .filter(n => n.bookId === bookId || (n.linkedBookIds || []).includes(bookId))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+function index() {
+  if (!state.index) state.index = buildIndex(state.books, state.notes);
+  return state.index;
+}
+
+function invalidate() { state.index = null; }
+
+function posText(pos) {
+  if (!pos || !pos.value) return '';
+  if (pos.unit === 'page') return `p.${pos.value}`;
+  if (pos.unit === 'time') return `${pos.value}`;
+  return /%$/.test(pos.value) ? pos.value : `No.${pos.value}`;
+}
+
+function progressOf(book, pos) {
+  if (!pos || !pos.value) return null;
+  if (pos.unit === 'page' && book.pages) return Math.min(1, Number(pos.value) / book.pages) || null;
+  const m = /^(\d+(?:\.\d+)?)%$/.exec(pos.value);
+  if (m) return Math.min(1, Number(m[1]) / 100);
+  return null;
+}
+
+function setTitle(text, { back = false } = {}) {
+  document.getElementById('nav-title').textContent = text;
+  document.getElementById('nav-title-large').textContent = text;
+  document.getElementById('back').hidden = !back;
+  document.title = `${text} - 読書メモ`;
+}
+
+function setTab(tab) {
+  for (const a of document.querySelectorAll('.tabbar__item')) {
+    const on = a.dataset.tab === tab;
+    a.classList.toggle('is-active', on);
+    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  }
+}
+
+async function load() {
+  [state.books, state.notes] = await Promise.all([db.getAll('books'), db.getAll('notes')]);
+  state.currentBookId = await db.getMeta('currentBookId');
+  invalidate();
+}
+
+async function saveBook(book) {
+  book.updatedAt = new Date().toISOString();
+  await db.put('books', book);
+  const i = state.books.findIndex(b => b.id === book.id);
+  if (i >= 0) state.books[i] = book; else state.books.push(book);
+  invalidate();
+}
+
+async function saveNote(note) {
+  note.updatedAt = new Date().toISOString();
+  await db.put('notes', note);
+  const i = state.notes.findIndex(n => n.id === note.id);
+  if (i >= 0) state.notes[i] = note; else state.notes.push(note);
+  invalidate();
+}
+
+// ---------- 再会: 関連する過去の本・メモ ----------
+function reunions({ text, author, excludeBookId }) {
+  const idx = index();
+  const notes = idx.search({ text, author, excludeBookId }, { type: 'note', limit: 3, minScore: 0.12 });
+  const books = idx.search({ text, author, excludeBookId }, { type: 'book', limit: 4, minScore: 0.1 })
+    .filter(r => { const b = bookById(r.doc.bookId); return b && b.status !== 'want'; });
+  return { notes, books: books.slice(0, 3) };
+}
+
+function reunionHtml(r, kind) {
+  const b = bookById(r.doc.bookId);
+  if (!b) return '';
+  const note = kind === 'note' ? state.notes.find(n => n.id === r.doc.id) : null;
+  const when = b.finishedAt || b.createdAt;
+  const ago = yearsAgo(when);
+  return `<li class="reunion" data-book="${esc(b.id)}">
+    <div class="reunion__title">${esc(b.title)}</div>
+    <div class="reunion__why">${esc([b.author, ago && `${ago}に${b.status === 'done' ? '読了' : '登録'}`, ...r.reasons].filter(Boolean).join(' ・ '))}</div>
+    ${note ? `<p class="reunion__text">${esc(note.text)}</p>` : ''}
+    <div class="reunion__reply" hidden>
+      <textarea aria-label="${esc(b.title)}につなげるメモ" placeholder="今の本とつなげて一言"></textarea>
+      <div class="note__tools"><button class="btn btn--small btn--prominent" data-act="link-save">つなげて保存</button><button class="btn btn--small btn--plain" data-act="link-cancel">やめる</button></div>
+    </div>
+    <div class="note__tools"><button class="btn btn--small btn--tinted" data-act="link-open">つなげて一言</button><a class="btn btn--small btn--plain" href="#book/${esc(b.id)}">本を見る</a></div>
+  </li>`;
+}
+
+function reunionSection(found, header) {
+  if (!found.notes.length && !found.books.length) return '';
+  return `<section class="list-section"><h2 class="list-section__header">${esc(header)}</h2>
+    <ul class="list list--inset" data-reunion>
+      ${found.notes.map(r => reunionHtml(r, 'note')).join('')}
+      ${found.books.map(r => reunionHtml(r, 'book')).join('')}
+    </ul>
+    <p class="list-section__footer">書名やメモに共通する語から探しています。つなげたメモは、今の本と過去の本の両方に残ります。</p>
+  </section>`;
+}
+
+// 「つなげて一言」の操作。fromBookId = 今読んでいる本
+function bindReunion(root, fromBookId, onSaved) {
+  root.querySelectorAll('[data-reunion] .reunion').forEach(li => {
+    const reply = li.querySelector('.reunion__reply');
+    li.querySelector('[data-act="link-open"]').addEventListener('click', () => {
+      reply.hidden = false;
+      reply.querySelector('textarea').focus();
+    });
+    li.querySelector('[data-act="link-cancel"]').addEventListener('click', () => { reply.hidden = true; });
+    li.querySelector('[data-act="link-save"]').addEventListener('click', async () => {
+      const text = reply.querySelector('textarea').value.trim();
+      if (!text) return;
+      await saveNote({
+        id: db.uid(), bookId: fromBookId, text, quote: '', kind: 'association',
+        pos: null, linkedBookIds: [li.dataset.book], createdAt: new Date().toISOString(), source: 'app',
+      });
+      reply.hidden = true;
+      toast('過去の本とつなげて保存しました');
+      if (onSaved) onSaved();
+    });
+  });
+}
+
+// ---------- 記録 ----------
+async function renderWrite() {
+  setTab('write');
+  setTitle('記録');
+  const reading = state.books.filter(b => b.status === 'reading')
+    .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  if (!reading.find(b => b.id === state.currentBookId)) state.currentBookId = reading[0] ? reading[0].id : null;
+  const book = bookById(state.currentBookId);
+
+  if (!book) {
+    $view.innerHTML = `<div class="empty">
+      <p class="empty__title">読書中の本がありません</p>
+      <p class="empty__message">本棚で本を追加するか、読書状態を「読書中」にすると、ここからすぐにメモできます。</p>
+      <a class="btn btn--prominent" href="#add">本を追加</a>
+    </div>`;
+    return;
+  }
+
+  const unit = POS_UNIT[book.format] || 'page';
+  const last = notesOf(book.id).find(n => n.bookId === book.id && n.pos && n.pos.value);
+  const lastPos = last && last.pos.unit === unit ? last.pos.value : '';
+  const recent = notesOf(book.id).slice(0, 5);
+  const saved = state.lastSaved && state.lastSaved.bookId === book.id ? state.lastSaved : null;
+
+  $view.innerHTML = `
+    <div class="book-chips" role="tablist" aria-label="読書中の本">
+      ${reading.map(b => `<button class="chip ${b.id === book.id ? 'is-active' : ''}" role="tab" aria-selected="${b.id === book.id}" data-id="${esc(b.id)}">${esc(b.title)}</button>`).join('')}
+      <a class="chip chip--add" href="#add">＋ 本を追加</a>
+    </div>
+    <div class="card">
+      <textarea class="field field--note" id="note-text" placeholder="思いつき・フレーズ・問い…&#10;音声はキーボードのマイクで" aria-label="メモ"></textarea>
+      <textarea class="field field--quote" id="note-quote" placeholder="本文の引用(任意)" aria-label="引用" hidden></textarea>
+    </div>
+    <div class="kinds" role="group" aria-label="種類(任意)">
+      ${KINDS.map(([k, l]) => `<button class="kind ${state.draftKind === k ? 'is-active' : ''}" data-kind="${k}" aria-pressed="${state.draftKind === k}">${l}</button>`).join('')}
+    </div>
+    <div class="card" style="margin-top: var(--space-3)">
+      <div class="row"><label for="note-pos">${POS_LABEL[unit]}</label><input id="note-pos" inputmode="${unit === 'page' ? 'numeric' : 'text'}" placeholder="${POS_PLACEHOLDER[unit]}" value="${esc(lastPos)}"></div>
+    </div>
+    <div class="actions">
+      <button class="btn btn--tinted" id="toggle-quote">引用を添える</button>
+      <button class="btn btn--prominent" id="save-note">保存</button>
+    </div>
+    <div id="after-save">${saved ? reunionSection(reunions({ text: [saved.quote, saved.text].join(' '), author: book.author, excludeBookId: book.id }), '再会: 関連しそうな過去の読書') : ''}</div>
+    ${recent.length ? `<section class="list-section"><h2 class="list-section__header">この本の最近のメモ</h2>
+      <ul class="list list--inset">${recent.map(n => noteHtml(n, { showBook: n.bookId !== book.id })).join('')}</ul></section>` : ''}
+  `;
+
+  $view.querySelectorAll('.chip[data-id]').forEach(c => c.addEventListener('click', async () => {
+    state.currentBookId = c.dataset.id;
+    state.lastSaved = null;
+    await db.setMeta('currentBookId', c.dataset.id);
+    renderWrite();
+  }));
+  $view.querySelectorAll('.kind').forEach(k => k.addEventListener('click', () => {
+    state.draftKind = state.draftKind === k.dataset.kind ? null : k.dataset.kind;
+    $view.querySelectorAll('.kind').forEach(x => {
+      const on = x.dataset.kind === state.draftKind;
+      x.classList.toggle('is-active', on);
+      x.setAttribute('aria-pressed', on);
+    });
+  }));
+  const quote = document.getElementById('note-quote');
+  document.getElementById('toggle-quote').addEventListener('click', () => { quote.hidden = !quote.hidden; if (!quote.hidden) quote.focus(); });
+  document.getElementById('save-note').addEventListener('click', async () => {
+    const text = document.getElementById('note-text').value.trim();
+    const q = quote.value.trim();
+    if (!text && !q) { document.getElementById('note-text').focus(); return; }
+    const posValue = document.getElementById('note-pos').value.trim();
+    const pos = posValue ? { unit, value: posValue } : null;
+    const note = {
+      id: db.uid(), bookId: book.id, text, quote: q, kind: state.draftKind || (q && !text ? 'quote' : null),
+      pos, progress: progressOf(book, pos), linkedBookIds: [], createdAt: new Date().toISOString(), source: 'app',
+    };
+    await saveNote(note);
+    await saveBook(book); // 並び順(最近使った本を先頭)のため
+    state.lastSaved = note;
+    state.draftKind = null;
+    renderWrite();
+    const after = document.getElementById('after-save');
+    if (after && after.children.length) {
+      toast('保存しました。関連しそうな過去の本があります');
+      after.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else toast('保存しました');
+  });
+  bindReunion($view, book.id, renderWrite);
+  bindNoteTools($view, renderWrite);
+}
+
+// ---------- メモの表示とAI ----------
+function noteHtml(n, { showBook = false } = {}) {
+  const b = bookById(n.bookId);
+  const linked = (n.linkedBookIds || []).map(bookById).filter(Boolean);
+  const meta = [
+    fmtDate(n.createdAt), posText(n.pos), n.kind && KIND_LABEL[n.kind],
+    n.source && n.source.startsWith('booklog') ? 'ブクログ' : '',
+  ].filter(Boolean);
+  return `<li class="note" data-note="${esc(n.id)}">
+    ${n.quote ? `<blockquote class="note__quote">${esc(n.quote)}</blockquote>` : ''}
+    ${n.text ? `<p class="note__text">${esc(n.text)}</p>` : ''}
+    <div class="note__meta">${meta.map(esc).join(' ・ ')}
+      ${showBook && b ? ` ・ <a href="#book/${esc(b.id)}" style="color:var(--color-accent);text-decoration:none">${esc(b.title)}</a>` : ''}
+      ${linked.length ? ` ・ つながり: ${linked.map(x => `<a href="#book/${esc(x.id)}" style="color:var(--color-accent);text-decoration:none">${esc(x.title)}</a>`).join('、')}` : ''}
+    </div>
+    <div class="note__tools">
+      <button class="btn btn--small btn--plain" data-act="ai-open">AIと考える</button>
+      <span data-ai-modes hidden>${gemini.modes().map(m => `<button class="btn btn--small btn--tinted" data-ai="${m.key}">${esc(m.label)}</button>`).join(' ')}</span>
+      <button class="btn btn--small btn--plain" data-act="delete" style="color:var(--color-destructive);margin-left:auto">削除</button>
+    </div>
+    <div class="ai-slot"></div>
+  </li>`;
+}
+
+function bindNoteTools(root, rerender) {
+  root.querySelectorAll('.note[data-note]').forEach(li => {
+    const note = state.notes.find(n => n.id === li.dataset.note);
+    if (!note) return;
+    li.querySelector('[data-act="ai-open"]').addEventListener('click', e => { e.currentTarget.hidden = true; li.querySelector('[data-ai-modes]').hidden = false; });
+    li.querySelectorAll('[data-ai]').forEach(btn => btn.addEventListener('click', () => runAi(li, note, btn.dataset.ai, btn.textContent, rerender)));
+    li.querySelector('[data-act="delete"]').addEventListener('click', async () => {
+      if (!confirm('このメモを削除しますか?')) return;
+      await db.del('notes', note.id);
+      state.notes = state.notes.filter(n => n.id !== note.id);
+      invalidate();
+      rerender();
+    });
+  });
+}
+
+async function runAi(li, note, mode, label, rerender) {
+  const slot = li.querySelector('.ai-slot');
+  const apiKey = await db.getMeta('geminiKey');
+  if (!apiKey) { toast('設定でGemini APIキーを入れてください'); return; }
+  const model = (await db.getMeta('geminiModel')) || gemini.DEFAULT_MODEL;
+  const book = bookById(note.bookId) || { title: '' };
+  const rel = index().search({ text: [note.quote, note.text].join(' '), excludeBookId: note.bookId }, { type: 'note', limit: 3, minScore: 0.12 })
+    .map(r => { const n = state.notes.find(x => x.id === r.doc.id); const b = bookById(r.doc.bookId); return n && b ? { text: n.text, bookTitle: b.title } : null; })
+    .filter(Boolean);
+  slot.innerHTML = `<div class="ai-answer"><span class="ai-answer__label">AI(${esc(label)})</span>考えています…</div>`;
+  try {
+    const answer = await gemini.ask({ apiKey, model, mode, book, note, related: rel });
+    slot.innerHTML = `<div class="ai-answer"><span class="ai-answer__label">AI(${esc(label)})・AIの一般知識を含みます</span>${esc(answer)}</div>
+      <div class="reunion__reply"><textarea placeholder="答えてみる(自分の言葉で)" aria-label="AIへの答え"></textarea>
+      <div class="note__tools"><button class="btn btn--small btn--prominent" data-act="answer">メモとして保存</button></div></div>`;
+    slot.querySelector('[data-act="answer"]').addEventListener('click', async () => {
+      const text = slot.querySelector('textarea').value.trim();
+      if (!text) return;
+      await saveNote({
+        id: db.uid(), bookId: note.bookId, text, quote: '', kind: mode === 'devil' ? 'objection' : 'question',
+        pos: null, linkedBookIds: [], replyTo: note.id, aiPrompt: answer, createdAt: new Date().toISOString(), source: 'app-ai',
+      });
+      toast('自分の答えを保存しました');
+      rerender();
+    });
+  } catch (e) {
+    slot.innerHTML = `<div class="ai-answer">${esc(e.message)}</div>`;
+  }
+}
+
+// ---------- 本棚 ----------
+let shelfFilter = 'reading';
+let shelfQuery = '';
+
+function renderShelf() {
+  setTab('shelf');
+  setTitle('本棚');
+  const filters = [['reading', '読書中'], ['want', '読みたい'], ['done', '読了'], ['all', 'すべて']];
+  const q = shelfQuery.normalize('NFKC').toLowerCase();
+  const list = state.books
+    .filter(b => shelfFilter === 'all' || b.status === shelfFilter)
+    .filter(b => !q || `${b.title} ${b.author}`.normalize('NFKC').toLowerCase().includes(q))
+    .sort((a, b) => (b.finishedAt || b.updatedAt || b.createdAt || '').localeCompare(a.finishedAt || a.updatedAt || a.createdAt || ''));
+  const counts = Object.fromEntries(filters.map(([k]) => [k, k === 'all' ? state.books.length : state.books.filter(b => b.status === k).length]));
+  $view.innerHTML = `
+    <label class="search"><span aria-hidden="true">⌕</span><input id="shelf-q" type="search" placeholder="書名・著者で絞り込み" value="${esc(shelfQuery)}" aria-label="本棚を検索"></label>
+    <div class="segmented-wrap" style="margin-top: var(--space-3)"><div class="segmented" role="tablist">
+      ${filters.map(([k, l]) => `<button class="segmented__item ${k === shelfFilter ? 'is-active' : ''}" role="tab" aria-selected="${k === shelfFilter}" data-f="${k}">${l} ${counts[k]}</button>`).join('')}
+    </div></div>
+    <div class="pad"><a class="btn btn--tinted btn--large" href="#add">本を追加</a></div>
+    <section class="list-section">
+      ${list.length ? `<ul class="list list--inset">${list.slice(0, 300).map(b => {
+        const n = state.notes.filter(x => x.bookId === b.id).length;
+        return `<li><a class="list__row" href="#book/${esc(b.id)}" style="color:inherit;text-decoration:none">
+          <div class="list__text"><span class="list__title">${esc(b.title)}</span>
+          <span class="list__subtitle">${esc([b.author, FORMAT_LABEL[b.format], b.finishedAt && `${fmtDate(b.finishedAt)}読了`, n && `メモ${n}`].filter(Boolean).join(' ・ '))}</span></div>
+          <span class="list__chevron" aria-hidden="true">›</span></a></li>`;
+      }).join('')}</ul>${list.length > 300 ? `<p class="list-section__footer">先頭300冊を表示しています。検索で絞り込めます。</p>` : ''}`
+      : `<div class="empty"><p class="empty__message">該当する本はありません。設定からブクログの記録を取り込めます。</p></div>`}
+    </section>`;
+  const input = document.getElementById('shelf-q');
+  input.addEventListener('input', () => {
+    shelfQuery = input.value;
+    const pos = input.selectionStart;
+    renderShelf();
+    const again = document.getElementById('shelf-q');
+    again.focus();
+    again.setSelectionRange(pos, pos);
+  });
+  $view.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => { shelfFilter = b.dataset.f; renderShelf(); }));
+}
+
+// ---------- 本を追加 ----------
+function renderAdd() {
+  setTab('shelf');
+  setTitle('本を追加', { back: true });
+  $view.innerHTML = `
+    <form id="add-form" class="search" role="search"><span aria-hidden="true">⌕</span><input id="add-q" type="search" placeholder="ISBN・書名・著者" aria-label="本を検索" enterkeyhint="search"></form>
+    <p class="list-section__footer">ISBNは本の裏表紙のバーコード下の数字(978から始まる13桁)です。</p>
+    <div id="add-results"></div>
+    <section class="list-section"><h2 class="list-section__header">見つからないときは手で登録</h2>
+      <div class="card">
+        <div class="row"><label for="m-title">書名</label><input id="m-title"></div>
+        <div class="row"><label for="m-author">著者</label><input id="m-author"></div>
+        <div class="row"><label for="m-format">媒体</label><select id="m-format">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>
+      </div>
+      <div class="actions"><button class="btn btn--tinted" id="m-add">この内容で登録</button></div>
+    </section>`;
+  const form = document.getElementById('add-form');
+  const results = document.getElementById('add-results');
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const q = document.getElementById('add-q').value.trim();
+    if (!q) return;
+    results.innerHTML = `<p class="pad muted">検索しています…</p>`;
+    try {
+      const found = await searchBooks(q);
+      if (!found.length) { results.innerHTML = `<p class="pad muted">見つかりませんでした。下から手で登録できます。</p>`; return; }
+      results.innerHTML = `<section class="list-section"><ul class="list list--inset">${found.map((b, i) => {
+        const dup = state.books.find(x => (b.isbn13 && x.isbn13 === b.isbn13));
+        return `<li class="list__row"><div class="list__text"><span class="list__title">${esc(b.title)}</span>
+          <span class="list__subtitle">${esc([b.author, b.publisher, b.year].filter(Boolean).join(' ・ '))}${dup ? ' ・ 登録済み' : ''}</span>
+          <div class="note__tools">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<button class="btn btn--small btn--tinted" data-i="${i}" data-format="${k}">${l}で読む</button>`).join('')}</div></div></li>`;
+      }).join('')}</ul></section>`;
+      results.querySelectorAll('[data-i]').forEach(btn => btn.addEventListener('click', () => addBook(found[Number(btn.dataset.i)], btn.dataset.format)));
+    } catch (err) {
+      results.innerHTML = `<p class="pad muted">${esc(err.message)}。電波のある場所で試すか、下から手で登録してください。</p>`;
+    }
+  });
+  document.getElementById('m-add').addEventListener('click', () => {
+    const title = document.getElementById('m-title').value.trim();
+    if (!title) { document.getElementById('m-title').focus(); return; }
+    addBook({ title, author: document.getElementById('m-author').value.trim() }, document.getElementById('m-format').value);
+  });
+  setTimeout(() => document.getElementById('add-q').focus(), 50);
+}
+
+async function addBook(info, format) {
+  const existing = info.isbn13 && state.books.find(b => b.isbn13 === info.isbn13);
+  const book = existing || {
+    id: db.uid(), isbn13: info.isbn13 || null, title: info.title, author: info.author || '',
+    publisher: info.publisher || '', year: info.year || '', pages: info.pages || null,
+    description: info.description || '', tags: [], subjects: [], ndc: null,
+    createdAt: new Date().toISOString(), source: 'app',
+  };
+  book.format = format;
+  book.status = 'reading';
+  book.startedAt = book.startedAt || new Date().toISOString().slice(0, 10);
+  await saveBook(book);
+  state.currentBookId = book.id;
+  await db.setMeta('currentBookId', book.id);
+  // 件名とNDCは後から補う(失敗しても登録は済んでいる)
+  ndlSubjects(book).then(async r => { if (r && (r.ndc || r.subjects.length)) { Object.assign(book, r); await saveBook(book); } });
+  toast(existing ? '読書中にしました' : '登録しました');
+  location.hash = `#book/${book.id}`;
+}
+
+// ---------- 本の詳細 ----------
+function renderBook(id) {
+  const book = bookById(id);
+  if (!book) { location.hash = '#shelf'; return; }
+  setTab('shelf');
+  setTitle(book.title, { back: true });
+  const notes = notesOf(book.id);
+  const found = reunions({ text: [book.title, (book.subjects || []).join(' '), book.description || ''].join(' '), author: book.author, excludeBookId: book.id });
+  $view.innerHTML = `
+    <div class="book-head">
+      <h2>${esc(book.title)}</h2>
+      <p class="muted">${esc([book.author, book.publisher, book.year].filter(Boolean).join(' ・ '))}</p>
+      ${(book.ndc || (book.subjects || []).length) ? `<div class="tags">${book.ndc ? `<span class="tag">NDC ${esc(book.ndc)}</span>` : ''}${(book.subjects || []).map(s => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}
+    </div>
+    <div class="card">
+      <div class="row"><label for="b-status">状態</label><select id="b-status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${book.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="row"><label for="b-format">媒体</label><select id="b-format">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<option value="${k}" ${book.format === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="row"><label for="b-pages">ページ数</label><input id="b-pages" inputmode="numeric" value="${esc(book.pages || '')}"></div>
+    </div>
+    ${book.status === 'reading' ? `<div class="actions"><a class="btn btn--prominent" href="#write" id="b-write">この本にメモする</a></div>` : ''}
+    <section class="list-section"><h2 class="list-section__header">メモ ${notes.length}</h2>
+      ${notes.length ? `<ul class="list list--inset">${notes.map(n => noteHtml(n, { showBook: n.bookId !== book.id })).join('')}</ul>` : `<p class="list-section__footer">まだメモはありません。</p>`}
+    </section>
+    ${reunionSection(found, '関連しそうな過去の読書')}
+    <div class="actions"><button class="btn btn--plain" id="b-ndl">国立国会図書館の件名を補う</button></div>`;
+  const update = async () => {
+    book.status = document.getElementById('b-status').value;
+    book.format = document.getElementById('b-format').value;
+    book.pages = Number(document.getElementById('b-pages').value) || null;
+    if (book.status === 'done' && !book.finishedAt) book.finishedAt = new Date().toISOString().slice(0, 10);
+    if (book.status === 'reading' && !book.startedAt) book.startedAt = new Date().toISOString().slice(0, 10);
+    await saveBook(book);
+    renderBook(id);
+  };
+  ['b-status', 'b-format', 'b-pages'].forEach(i => document.getElementById(i).addEventListener('change', update));
+  const w = document.getElementById('b-write');
+  if (w) w.addEventListener('click', () => { state.currentBookId = book.id; db.setMeta('currentBookId', book.id); });
+  document.getElementById('b-ndl').addEventListener('click', async () => {
+    const r = await ndlSubjects(book);
+    if (!r) { toast('国立国会図書館から取得できませんでした'); return; }
+    Object.assign(book, r);
+    await saveBook(book);
+    toast(r.ndc || r.subjects.length ? '件名を補いました' : '件名は見つかりませんでした');
+    renderBook(id);
+  });
+  bindReunion($view, book.id, () => renderBook(id));
+  bindNoteTools($view, () => renderBook(id));
+}
+
+// ---------- メモ一覧 ----------
+let notesQuery = '';
+function renderNotes() {
+  setTab('notes');
+  setTitle('メモ');
+  const q = notesQuery.normalize('NFKC').toLowerCase();
+  const list = state.notes
+    .filter(n => !q || `${n.text} ${n.quote}`.normalize('NFKC').toLowerCase().includes(q))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  $view.innerHTML = `
+    <label class="search"><span aria-hidden="true">⌕</span><input id="notes-q" type="search" placeholder="メモを検索" value="${esc(notesQuery)}" aria-label="メモを検索"></label>
+    <section class="list-section">
+      ${list.length ? `<ul class="list list--inset">${list.slice(0, 200).map(n => noteHtml(n, { showBook: true })).join('')}</ul>` : `<div class="empty"><p class="empty__message">メモはまだありません。</p></div>`}
+    </section>`;
+  const input = document.getElementById('notes-q');
+  input.addEventListener('change', () => { notesQuery = input.value; renderNotes(); });
+  bindNoteTools($view, renderNotes);
+}
+
+// ---------- 設定 ----------
+async function renderSettings() {
+  setTab('settings');
+  setTitle('設定');
+  const [key, model, lastBackup, persisted] = await Promise.all([
+    db.getMeta('geminiKey', ''), db.getMeta('geminiModel', ''), db.getMeta('lastBackupAt'),
+    navigator.storage && navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false),
+  ]);
+  const imported = state.books.filter(b => b.source === 'booklog').length;
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  $view.innerHTML = `
+    <section class="list-section"><h2 class="list-section__header">バックアップ</h2>
+      <div class="card">
+        <p class="small muted" style="margin:0">データはこのiPhoneの中だけにあります。定期的に書き出して「ファイル」アプリ(iCloud Drive)に保存してください。</p>
+        <p class="small" style="margin:var(--space-2) 0 0">最後の書き出し: ${lastBackup ? fmtDate(lastBackup) : 'まだありません'}</p>
+      </div>
+      <div class="actions"><button class="btn btn--prominent" id="export">書き出す</button><label class="btn btn--tinted">読み込む<input type="file" id="import" accept="application/json,.json" hidden></label></div>
+      ${!standalone ? `<p class="list-section__footer">Safariの共有ボタンから「ホーム画面に追加」してから使ってください。追加しないと、しばらく開かないうちにデータが消えることがあります。</p>` : ''}
+      <p class="list-section__footer">保存領域の保護: ${persisted ? '有効' : '未許可'}</p>
+    </section>
+    <section class="list-section"><h2 class="list-section__header">ブクログから取り込む</h2>
+      <div class="card"><p class="small muted" style="margin:0">ブクログの「データのエクスポート」で書き出したCSVを選びます。同じ本は二重に登録されません。${imported ? `取り込み済み: ${imported}冊` : ''}</p></div>
+      <div class="actions"><label class="btn btn--tinted">CSVを選ぶ<input type="file" id="booklog" accept=".csv,text/csv" hidden></label></div>
+    </section>
+    <section class="list-section"><h2 class="list-section__header">AI(Gemini)</h2>
+      <div class="card">
+        <div class="row"><label for="g-key">APIキー</label><input id="g-key" type="password" autocomplete="off" value="${esc(key)}" placeholder="Google AI Studioで取得"></div>
+        <div class="row"><label for="g-model">モデル</label><input id="g-model" value="${esc(model)}" placeholder="${gemini.DEFAULT_MODEL}"></div>
+      </div>
+      <p class="list-section__footer">無料枠では、送った内容がGoogleの製品改善に使われ、人が読むこともあります。AIに送るのは、メモの「問い返す」などを押したときだけです。キーはこの端末にだけ保存され、書き出しファイルにも含まれません。</p>
+    </section>
+    <section class="list-section"><h2 class="list-section__header">このアプリについて</h2>
+      <p class="list-section__footer">本 ${state.books.length}冊 ・ メモ ${state.notes.length}件。書誌の検索にGoogle Books APIと国立国会図書館サーチのAPIを利用しています。</p>
+    </section>`;
+
+  document.getElementById('export').addEventListener('click', async () => {
+    try { if (await exportData()) { toast('書き出しました'); renderSettings(); } } catch (e) { toast(e.message); }
+  });
+  document.getElementById('import').addEventListener('change', async e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try { const n = await importData(await f.text()); await load(); toast(`${n}件を読み込みました`); renderSettings(); } catch (err) { toast(err.message); }
+  });
+  document.getElementById('booklog').addEventListener('change', async e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try { const r = await importBooklog(await f.arrayBuffer()); toast(`${r.books}冊・メモ${r.notes}件を取り込みました`, 4000); renderSettings(); } catch (err) { toast(`取り込めませんでした: ${err.message}`); }
+  });
+  const saveKey = async () => {
+    await db.setMeta('geminiKey', document.getElementById('g-key').value.trim());
+    await db.setMeta('geminiModel', document.getElementById('g-model').value.trim());
+    toast('保存しました');
+  };
+  document.getElementById('g-key').addEventListener('change', saveKey);
+  document.getElementById('g-model').addEventListener('change', saveKey);
+}
+
+async function importBooklog(buffer) {
+  const { records } = parseBooklog(buffer);
+  const byKey = new Map(state.books.filter(b => b.booklogKey).map(b => [b.booklogKey, b]));
+  const byIsbn = new Map(state.books.filter(b => b.isbn13).map(b => [b.isbn13, b]));
+  const books = [];
+  const notes = [];
+  for (const { book, notes: ns } of records) {
+    if (byKey.has(book.booklogKey) || (book.isbn13 && byIsbn.has(book.isbn13))) continue;
+    book.id = db.uid();
+    book.subjects = [];
+    book.ndc = null;
+    books.push(book);
+    for (const n of ns) notes.push({ id: db.uid(), bookId: book.id, quote: '', pos: null, linkedBookIds: [], ...n });
+  }
+  await db.putMany('books', books);
+  await db.putMany('notes', notes);
+  await load();
+  return { books: books.length, notes: notes.length };
+}
+
+// ---------- ルーティング ----------
+async function route() {
+  const [name, arg] = location.hash.replace(/^#/, '').split('/');
+  window.scrollTo(0, 0);
+  switch (name) {
+    case 'shelf': return renderShelf();
+    case 'add': return renderAdd();
+    case 'book': return renderBook(decodeURIComponent(arg || ''));
+    case 'notes': return renderNotes();
+    case 'settings': return renderSettings();
+    default: return renderWrite();
+  }
+}
+
+document.getElementById('back').addEventListener('click', () => history.length > 1 ? history.back() : (location.hash = '#shelf'));
+addEventListener('hashchange', route);
+
+// Large Title の折り畳み
+const nav = document.getElementById('nav');
+const sentinel = document.createElement('div');
+sentinel.style.cssText = 'position:absolute;top:0;height:1px;width:1px;';
+document.body.prepend(sentinel);
+new IntersectionObserver(([e]) => nav.classList.toggle('is-collapsed', !e.isIntersecting), { threshold: 0 }).observe(sentinel);
+
+(async function start() {
+  await load();
+  db.requestPersist();
+  route();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+})();
+
+// テスト用に公開
+window.__app = { state, importBooklog, normalizeIsbn };
