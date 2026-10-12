@@ -423,7 +423,7 @@ async function pumpGoogle() {
         x.insertAdjacentHTML('beforeend', `<img src="${esc(url)}" alt="" referrerpolicy="no-referrer">`);
       });
     } catch (e) {
-      if (e.status === 429 || e.status === 403) googleBlocked = true; // 今回は諦める(保存しないので次回また試す)
+      if ([429, 403, 503].includes(e.status)) googleBlocked = true; // 今回は諦める(保存しないので次回また試す)
     }
     await new Promise(r => setTimeout(r, 400));
   }
@@ -770,12 +770,20 @@ async function runDiagnostics() {
     i.referrerPolicy = 'no-referrer';
     i.src = url;
   });
-  const http = async url => { try { const r = await fetch(url); return r.ok ? 'OK' : `HTTP ${r.status}`; } catch (e) { return `通信できない(${e.message})`; } };
+  const http = async url => {
+    try {
+      const r = await fetch(url);
+      if (r.ok) return 'OK';
+      let why = '';
+      try { const j = await r.json(); why = (j.error && (j.error.errors?.[0]?.reason || j.error.status || j.error.message)) || ''; } catch {}
+      return `HTTP ${r.status}${why ? ` ${why}` : ''}`;
+    } catch (e) { return `通信できない(${e.message})`; }
+  };
   const key = await db.getMeta('booksKey', '');
   const checks = [
     ['国立国会図書館の書影', () => img(`https://ndlsearch.ndl.go.jp/thumbnail/${sample.isbn13}.jpg`)],
     ['Amazonの書影', () => img(`https://m.media-amazon.com/images/P/${sample.itemId || isbn13to10(sample.isbn13)}.09.MZZZZZZZ.jpg`)],
-    ['Google Books', () => http(`https://www.googleapis.com/books/v1/volumes?q=isbn:${sample.isbn13}${key ? `&key=${encodeURIComponent(key)}` : ''}`)],
+    [key ? 'Google Books(キーあり)' : 'Google Books(キーなし)', () => http(`https://www.googleapis.com/books/v1/volumes?q=isbn:${sample.isbn13}${key ? `&key=${encodeURIComponent(key)}` : ''}`)],
     ['国立国会図書館サーチ', () => http(`https://ndlsearch.ndl.go.jp/api/opensearch?isbn=${sample.isbn13}&cnt=1`)],
     ['Wikipedia', () => http('https://ja.wikipedia.org/api/rest_v1/page/summary/%E5%A4%8F%E7%9B%AE%E6%BC%B1%E7%9F%B3')],
   ];
