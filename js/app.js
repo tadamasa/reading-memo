@@ -1,6 +1,7 @@
 import * as db from './db.js';
 import { parseBooklog } from './booklog.js';
 import { buildIndex } from './related.js';
+import { statsHtml, attachTooltips, scoreOf } from './stats.js';
 import { searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, bookSummary, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks } from './books.js';
 import * as gemini from './gemini.js';
 import { exportData, importData } from './backup.js';
@@ -452,6 +453,7 @@ const SORTS = {
   added: { label: '登録日', key: b => dateInput(b.createdAt) },
   finished: { label: '読了日', key: b => dateInput(b.finishedAt) },
   published: { label: '刊行日', key: b => (b.year || '').replace(/[^\d-]/g, '') },
+  score: { label: '評価', key: b => scoreOf(b) ? String(scoreOf(b)).padStart(2, '0') : '' },
 };
 
 function renderShelf() {
@@ -506,6 +508,7 @@ function renderShelf() {
 // 並び順に合わせて、一覧に出す日付を変える
 function shelfDateLabel(b) {
   if (shelfSort === 'published') return b.year ? `${b.year}年刊` : '';
+  if (shelfSort === 'score') return scoreOf(b) ? `評価 ${scoreOf(b)}` : '未評価';
   if (shelfSort === 'added') return b.createdAt ? `${fmtDate(b.createdAt)}登録` : '';
   return b.finishedAt ? `${fmtDate(b.finishedAt)}読了` : '';
 }
@@ -600,6 +603,10 @@ function renderBook(id) {
       <div class="row"><label for="b-status">状態</label><select id="b-status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${book.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row"><label for="b-format">媒体</label><select id="b-format">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<option value="${k}" ${book.format === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row"><label for="b-pages">ページ数</label><input id="b-pages" inputmode="numeric" value="${esc(book.pages || '')}"></div>
+      <div class="row score-row"><label for="b-score">評価</label>
+        <input id="b-score" type="range" min="1" max="10" step="1" value="${scoreOf(book) || 5}" class="${scoreOf(book) ? '' : 'is-unset'}" aria-valuetext="${scoreOf(book) ? `${scoreOf(book)}点` : '未評価'}">
+        <output id="b-score-out" for="b-score">${scoreOf(book) ? `${scoreOf(book)}<small>/10</small>` : '未評価'}</output>
+        <button class="btn btn--small btn--plain" id="b-score-clear" aria-label="評価を消す" ${scoreOf(book) ? '' : 'hidden'}>消す</button></div>
       <div class="row"><label for="b-added">登録日</label><input id="b-added" type="date" value="${dateInput(book.createdAt)}"></div>
       <div class="row"><label for="b-started">読み始めた日</label><input id="b-started" type="date" value="${dateInput(book.startedAt)}"></div>
       <div class="row"><label for="b-finished">読了日</label><input id="b-finished" type="date" value="${dateInput(book.finishedAt)}"></div>
@@ -638,6 +645,27 @@ function renderBook(id) {
     renderBook(id);
   };
   ['b-status', 'b-format', 'b-pages', 'b-added', 'b-started', 'b-finished'].forEach(i => document.getElementById(i).addEventListener('change', update));
+  const scoreEl = document.getElementById('b-score');
+  const scoreOut = document.getElementById('b-score-out');
+  const scoreClear = document.getElementById('b-score-clear');
+  scoreEl.addEventListener('input', () => {
+    scoreEl.classList.remove('is-unset');
+    scoreOut.innerHTML = `${scoreEl.value}<small>/10</small>`;
+    scoreEl.setAttribute('aria-valuetext', `${scoreEl.value}点`);
+  });
+  scoreEl.addEventListener('change', async () => {
+    book.score = Number(scoreEl.value);
+    scoreClear.hidden = false;
+    await saveBook(book);
+  });
+  scoreClear.addEventListener('click', async () => {
+    book.score = null;
+    book.rating = null;
+    scoreEl.classList.add('is-unset');
+    scoreOut.textContent = '未評価';
+    scoreClear.hidden = true;
+    await saveBook(book);
+  });
   const w = document.getElementById('b-write');
   if (w) w.addEventListener('click', () => { state.currentBookId = book.id; db.setMeta('currentBookId', book.id); });
   document.getElementById('b-ndl').addEventListener('click', async () => {
@@ -767,6 +795,16 @@ function renderNotes() {
   const input = document.getElementById('notes-q');
   input.addEventListener('change', () => { notesQuery = input.value; renderNotes(); });
   bindNoteTools($view, renderNotes);
+}
+
+// ---------- 分析 ----------
+let statsRange = 'all';
+function renderStats() {
+  setTab('stats');
+  setTitle('分析');
+  $view.innerHTML = statsHtml(state.books, statsRange);
+  $view.querySelectorAll('[data-range]').forEach(b => b.addEventListener('click', () => { statsRange = b.dataset.range; renderStats(); }));
+  if (!$view.dataset.tips) { attachTooltips($view); $view.dataset.tips = '1'; }
 }
 
 // ---------- 設定 ----------
@@ -905,6 +943,7 @@ async function route() {
     case 'add': return renderAdd();
     case 'book': return renderBook(decodeURIComponent(arg || ''));
     case 'notes': return renderNotes();
+    case 'stats': return renderStats();
     case 'settings': return renderSettings();
     default: return renderWrite();
   }
