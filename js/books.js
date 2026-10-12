@@ -196,6 +196,63 @@ export async function authorWorks(author, limit = 20) {
   }
 }
 
+// ---------- 本の概要 ----------
+// 1) openBD(版元ドットコムとTRCのデータ。キー不要、ISBNのある本)
+// 2) Google Books(キーなしだと止まりがち)
+// 3) 国立国会図書館サーチの注記
+// 4) Wikipediaの作品記事(著者名が本文に出てくるときだけ採用。古典やKindle本向け)
+export function openbdText(item) {
+  const tc = item?.onix?.CollateralDetail?.TextContent || [];
+  const pick = type => (tc.find(t => t.TextType === type) || {}).Text;
+  return (pick('03') || pick('02') || pick('04') || '').trim();
+}
+
+async function summaryOpenbd(isbn13) {
+  if (!isbn13) return '';
+  const res = await fetch(`https://api.openbd.jp/v1/get?isbn=${isbn13}`);
+  if (!res.ok) return '';
+  const [item] = await res.json();
+  return openbdText(item);
+}
+
+async function summaryGoogle({ isbn13, title, author }) {
+  const q = isbn13 ? `isbn:${isbn13}` : `intitle:${shortTitle(title)}${author ? ` inauthor:${firstAuthor(author).replace(/\s/g, '')}` : ''}`;
+  const data = await googleBooks(`q=${encodeURIComponent(q)}&maxResults=3`);
+  for (const item of data.items || []) {
+    const d = (item.volumeInfo || {}).description;
+    if (d) return d.replace(/<[^>]+>/g, '').trim();
+  }
+  return '';
+}
+
+// NDLの注記は「索引あり」などが多いので、ある程度長い文だけ採る
+async function summaryNdl({ isbn13 }) {
+  if (!isbn13) return '';
+  const res = await fetch(`https://ndlsearch.ndl.go.jp/api/opensearch?isbn=${isbn13}&cnt=1`);
+  if (!res.ok) return '';
+  const xml = new DOMParser().parseFromString(await res.text(), 'application/xml');
+  const item = xml.getElementsByTagName('item')[0];
+  if (!item) return '';
+  return [...item.getElementsByTagName('*')].filter(el => el.localName === 'description')
+    .map(el => el.textContent.trim()).filter(t => t.length >= 40).join('\n');
+}
+
+async function summaryWiki({ title, author }) {
+  const w = await wikiSummary(shortTitle(title));
+  const surname = firstAuthor(author).split(' ')[0].slice(0, 2);
+  return w && surname && w.extract.includes(surname) ? w.extract : '';
+}
+
+// 戻り値: { text, source }、どこにもなければ null、通信に失敗した先があれば { failed: true }。
+export async function bookSummary(book) {
+  const tries = [['openBD', () => summaryOpenbd(book.isbn13)], ['Google Books', () => summaryGoogle(book)], ['国立国会図書館サーチ', () => summaryNdl(book)], ['Wikipedia', () => summaryWiki(book)]];
+  let failed = false;
+  for (const [source, fn] of tries) {
+    try { const text = await fn(); if (text) return { text, source }; } catch { failed = true; }
+  }
+  return failed ? { text: '', failed: true } : null;
+}
+
 // ---------- Wikipedia(著者や作品の概要) ----------
 export async function wikiSummary(name) {
   if (!name) return null;

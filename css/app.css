@@ -88,3 +88,8 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .links-row__group { flex: none; width: 4em; padding-top: 10px; font-size: 13px; color: var(--color-label-secondary); }
 .links-row__items { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-1) 0; }
 .author-wiki { margin-bottom: 0; }
+
+/* 概要 */
+.summary { margin: 0; font-size: 15px; line-height: 23px; white-space: pre-wrap; }
+.summary.is-clamped { display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+#summary-more { margin-top: var(--space-1); padding-left: 0; }

@@ -1,7 +1,7 @@
 import * as db from './db.js';
 import { parseBooklog } from './booklog.js';
 import { buildIndex } from './related.js';
-import { searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks } from './books.js';
+import { searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, bookSummary, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks } from './books.js';
 import * as gemini from './gemini.js';
 import { exportData, importData } from './backup.js';
 
@@ -554,6 +554,10 @@ function renderBook(id) {
         ${(book.ndc || (book.subjects || []).length) ? `<div class="tags">${book.ndc ? `<span class="tag">NDC ${esc(book.ndc)}</span>` : ''}${(book.subjects || []).map(s => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}
       </div>
     </div>
+    <section class="list-section" id="summary-section">
+      <h2 class="list-section__header">概要</h2>
+      <div id="summary"><p class="list-section__footer">${navigator.onLine ? '探しています…' : 'オフラインのため表示できません。'}</p></div>
+    </section>
     <div class="card">
       <div class="row"><label for="b-status">状態</label><select id="b-status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${book.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row"><label for="b-format">媒体</label><select id="b-format">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<option value="${k}" ${book.format === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
@@ -573,6 +577,7 @@ function renderBook(id) {
     </section>
     <div class="actions"><button class="btn btn--plain" id="b-ndl">国立国会図書館の件名を補う</button></div>`;
   if (book.author) loadAuthor(book);
+  loadSummary(book);
   const update = async () => {
     book.status = document.getElementById('b-status').value;
     book.format = document.getElementById('b-format').value;
@@ -610,6 +615,35 @@ function linksSection(book) {
       <span class="links-row__items">${links.filter(l => l.group === g).map(l => `<a class="btn btn--small btn--tinted" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join('')}</span>
     </li>`).join('')}</ul>
     <p class="list-section__footer">各サービスの検索結果を開きます。</p></section>`;
+}
+
+// ---------- 概要 ----------
+// 取れた概要は本に保存する。どこにもなければ30日は探し直さない。
+function showSummary(book) {
+  const box = document.getElementById('summary');
+  if (!box) return;
+  if (!book.description) { box.innerHTML = `<p class="list-section__footer">概要は見つかりませんでした。</p>`; return; }
+  const long = book.description.length > 140;
+  box.innerHTML = `<div class="card"><p class="summary${long ? ' is-clamped' : ''}">${esc(book.description)}</p>
+    ${long ? `<button class="btn btn--small btn--plain" id="summary-more">続きを読む</button>` : ''}</div>
+    ${book.descriptionSource ? `<p class="list-section__footer">出典: ${esc(book.descriptionSource)}</p>` : ''}`;
+  const more = document.getElementById('summary-more');
+  if (more) more.addEventListener('click', () => {
+    const p = box.querySelector('.summary');
+    p.classList.toggle('is-clamped');
+    more.textContent = p.classList.contains('is-clamped') ? '続きを読む' : '閉じる';
+  });
+}
+
+async function loadSummary(book) {
+  const fresh = book.descriptionCheckedAt && Date.now() - Date.parse(book.descriptionCheckedAt) < 30 * 864e5;
+  if (book.description || fresh || !navigator.onLine) return showSummary(book);
+  const r = await bookSummary(book);
+  if (r && r.failed) { showSummary(book); return; } // 次に開いたときまた探す
+  book.descriptionCheckedAt = new Date().toISOString();
+  if (r) { book.description = r.text; book.descriptionSource = r.source; invalidate(); }
+  await db.put('books', book); // 並び順を変えないよう updatedAt は触らない
+  if (bookById(book.id) && location.hash === `#book/${book.id}`) showSummary(book);
 }
 
 const authorCache = new Map();
