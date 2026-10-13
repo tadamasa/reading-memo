@@ -185,3 +185,11 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .discover-actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
 .discover-lens { margin: var(--space-4) 0 var(--space-2); }
 .discover-lens b { color: var(--color-label); font-weight: 600; margin-right: 4px; }
+
+/* 読みたいのまとめて追加 */
+.want-row { align-items: flex-start; }
+.want-row input[type="checkbox"] { flex: none; width: 22px; height: 22px; margin-top: 18px; accent-color: var(--color-accent); }
+.want-title, .want-author { border: none; outline: none; background: transparent; padding: 2px 0; width: 100%; }
+.want-title { font-size: 16px; }
+.want-author { font-size: 14px; color: var(--color-label-secondary); }
+.want-title:focus-visible, .want-author:focus-visible { outline: 2px solid var(--color-accent); border-radius: 4px; }

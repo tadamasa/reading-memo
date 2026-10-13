@@ -280,6 +280,7 @@ export function relatedLinks(book) {
   return [
     { group: '動画', label: 'YouTubeで探す', url: `https://www.youtube.com/results?search_query=${enc(ta)}` },
     { group: '動画', label: '著者のインタビュー', url: `https://www.youtube.com/results?search_query=${enc(`${a} インタビュー`)}`, hide: !a },
+    { group: '書評', label: 'Amazon', url: amazonUrl(book) },
     { group: '書評', label: 'ブクログ', url: booklog },
     { group: '書評', label: '読書メーター', url: `https://bookmeter.com/search?keyword=${enc(t)}` },
     { group: '書評', label: 'ネットの書評', url: g(`${ta} 書評`) },
@@ -291,6 +292,12 @@ export function relatedLinks(book) {
     { group: '調べる', label: 'Wikipedia', url: `https://ja.wikipedia.org/w/index.php?search=${enc(t)}` },
     { group: '調べる', label: '近くの図書館(カーリル)', url: book.isbn13 ? `https://calil.jp/book/${book.isbn13.slice(3, 12)}${isbn10Check(book.isbn13)}` : `https://calil.jp/search?q=${enc(ta)}` },
   ].filter(l => !l.hide);
+}
+
+// ASIN(ブクログのアイテムID)かISBN10が分かれば商品ページ、なければ本の検索結果
+export function amazonUrl(book) {
+  const id = (book.itemId && /^[0-9A-Z]{10}$/.test(book.itemId) ? book.itemId : null) || isbn13to10(book.isbn13);
+  return id ? `https://www.amazon.co.jp/dp/${id}` : `https://www.amazon.co.jp/s?k=${encodeURIComponent([shortTitle(book.title), firstAuthor(book.author)].filter(Boolean).join(' '))}&i=stripbooks`;
 }
 
 function isbn10Check(isbn13) {

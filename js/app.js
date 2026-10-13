@@ -3,6 +3,8 @@ import { parseBooklog } from './booklog.js';
 import { buildIndex } from './related.js';
 import { DEFAULT_CATEGORIES, ndcToCategory, parseCategories, buildClassifyPrompt, parseClassifyResult } from './categories.js';
 import { LENSES, buildDiscoverPrompt, parseDiscoverResult, amazonSearchUrl } from './discover.js';
+import { parseWantText, WANT_SOURCES } from './wantimport.js';
+import { checkLibrary } from './calil.js';
 import { statsHtml, attachTooltips, scoreOf } from './stats.js';
 import { parseNdlItems, searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, bookSummary, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks } from './books.js';
 import * as gemini from './gemini.js';
@@ -482,6 +484,7 @@ function renderShelf() {
       ${filters.map(([k, l]) => `<button class="segmented__item ${k === shelfFilter ? 'is-active' : ''}" role="tab" aria-selected="${k === shelfFilter}" data-f="${k}">${l} ${counts[k]}</button>`).join('')}
     </div></div>
     <div class="pad"><a class="btn btn--tinted btn--large" href="#add">本を追加</a></div>
+    ${shelfFilter === 'want' ? `<div class="actions" style="padding-bottom:0"><a class="btn btn--plain" href="#add">まとめて追加</a><button class="btn btn--plain" id="lib-check">図書館の貸出状況を確認</button></div>` : ''}
     <div class="sort-bar">
       <label for="shelf-sort">並び順</label>
       <select id="shelf-sort">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${k === shelfSort ? 'selected' : ''}>${v.label}</option>`).join('')}</select>
@@ -509,12 +512,23 @@ function renderShelf() {
   });
   $view.querySelectorAll('[data-f]').forEach(b => b.addEventListener('click', () => { shelfFilter = b.dataset.f; renderShelf(); }));
   document.getElementById('shelf-sort').addEventListener('change', e => { shelfSort = e.target.value; db.setMeta('shelfSort', shelfSort); renderShelf(); });
+  const lib = document.getElementById('lib-check');
+  if (lib) lib.addEventListener('click', async () => {
+    lib.disabled = true;
+    lib.textContent = '確認しています…';
+    try {
+      const r = await checkBooksAtLibrary(state.books.filter(b => b.status === 'want'));
+      toast(`${r.checked}冊を確認しました${r.skipped ? `(ISBNのない${r.skipped}冊は除く)` : ''}`, 4000);
+      renderShelf();
+    } catch (e) { toast(e.message, 4000); lib.disabled = false; lib.textContent = '図書館の貸出状況を確認'; }
+  });
   document.getElementById('shelf-cat').addEventListener('change', e => { shelfCat = e.target.value; renderShelf(); });
   document.getElementById('shelf-dir').addEventListener('click', () => { shelfAsc = !shelfAsc; db.setMeta('shelfAsc', shelfAsc); renderShelf(); });
 }
 
 // 並び順に合わせて、一覧に出す日付を変える
 function shelfDateLabel(b) {
+  if (b.status === 'want' && wantLabel(b) && shelfSort !== 'published' && shelfSort !== 'score') return wantLabel(b);
   if (shelfSort === 'published') return b.year ? `${b.year}年刊` : '';
   if (shelfSort === 'score') return scoreOf(b) ? `評価 ${scoreOf(b)}` : '未評価';
   if (shelfSort === 'added') return b.createdAt ? `${fmtDate(b.createdAt)}登録` : '';
@@ -529,6 +543,12 @@ function renderAdd() {
     <form id="add-form" class="search" role="search"><span aria-hidden="true">⌕</span><input id="add-q" type="search" placeholder="ISBN・書名・著者" aria-label="本を検索" enterkeyhint="search"></form>
     <p class="list-section__footer">ISBNは本の裏表紙のバーコード下の数字(978から始まる13桁)です。</p>
     <div id="add-results"></div>
+    <section class="list-section"><h2 class="list-section__header">読みたい本をまとめて追加</h2>
+      <div class="card"><textarea id="w-text" class="field" rows="6" placeholder="図書館の予約一覧やAmazonのほしい物リストを全選択してコピーしたもの、AmazonのURL、ISBN、書名を1行ずつ…"></textarea></div>
+      <div class="card" style="margin-top:var(--space-3)"><div class="row"><label for="w-source">入手先</label><select id="w-source">${WANT_SOURCES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div></div>
+      <div class="actions"><button class="btn btn--tinted" id="w-parse">読み取る</button></div>
+      <div id="w-preview"></div>
+    </section>
     <section class="list-section"><h2 class="list-section__header">見つからないときは手で登録</h2>
       <div class="card">
         <div class="row"><label for="m-title">書名</label><input id="m-title"></div>
@@ -551,9 +571,13 @@ function renderAdd() {
         const dup = state.books.find(x => (b.isbn13 && x.isbn13 === b.isbn13));
         return `<li class="list__row">${coverHtml(b)}<div class="list__text"><span class="list__title">${esc(b.title)}</span>
           <span class="list__subtitle">${esc([b.author, b.publisher, b.year].filter(Boolean).join(' ・ '))}${dup ? ' ・ 登録済み' : ''}</span>
-          <div class="note__tools">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<button class="btn btn--small btn--tinted" data-i="${i}" data-format="${k}">${l}で読む</button>`).join('')}</div></div></li>`;
+          <div class="note__tools">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<button class="btn btn--small btn--tinted" data-i="${i}" data-format="${k}">${l}で読む</button>`).join('')}<button class="btn btn--small btn--plain" data-want-i="${i}">読みたい</button></div></div></li>`;
       }).join('')}</ul></section>`;
       results.querySelectorAll('[data-i]').forEach(btn => btn.addEventListener('click', () => addBook(found[Number(btn.dataset.i)], btn.dataset.format)));
+      results.querySelectorAll('[data-want-i]').forEach(btn => btn.addEventListener('click', async () => {
+        const n = await addWants([{ ...found[Number(btn.dataset.wantI)] }], '');
+        btn.outerHTML = `<span class="small muted">${n ? '読みたいに追加しました' : '登録済みです'}</span>`;
+      }));
     } catch (err) {
       results.innerHTML = `<p class="pad muted">${esc(err.message)}。電波のある場所で試すか、下から手で登録してください。</p>`;
     }
@@ -563,7 +587,98 @@ function renderAdd() {
     if (!title) { document.getElementById('m-title').focus(); return; }
     addBook({ title, author: document.getElementById('m-author').value.trim() }, document.getElementById('m-format').value);
   });
-  setTimeout(() => document.getElementById('add-q').focus(), 50);
+  document.getElementById('w-parse').addEventListener('click', parseWants);
+}
+
+// ---------- 読みたいの一本化 ----------
+const normTitle = s => (s || '').normalize('NFKC').replace(/[\s(（:：「」『』].*$/, '').toLowerCase();
+
+function findOnShelf(c) {
+  return state.books.find(b => (c.isbn13 && b.isbn13 === c.isbn13) || (c.asin && b.itemId === c.asin) || (c.title && normTitle(b.title) === normTitle(c.title)));
+}
+
+// 書名だけ・ISBNだけの行を、国会図書館サーチ(だめならGoogle Books)で補う
+async function resolveWant(c) {
+  const isbn13 = c.isbn ? normalizeIsbn(c.isbn) : c.asin && /^\d{9}[\dX]$/.test(c.asin) ? normalizeIsbn(c.asin) : null;
+  const base = { title: c.title, author: c.author, isbn13, asin: c.asin, short: c.short };
+  const q = isbn13 ? `isbn=${isbn13}` : c.title ? `title=${encodeURIComponent(c.title)}${c.author ? `&creator=${encodeURIComponent(c.author.split(/[ ,、]/)[0])}` : ''}` : null;
+  if (!q) return base;
+  try {
+    const res = await fetch(`https://ndlsearch.ndl.go.jp/api/opensearch?${q}&mediatype=books&cnt=3`);
+    const hit = res.ok ? parseNdlItems(await res.text())[0] : null;
+    if (hit) return { ...base, title: base.title || hit.title, author: base.author || hit.author, isbn13: isbn13 || hit.isbn13, publisher: hit.publisher, year: hit.year, matched: 'ndl' };
+  } catch { /* 次へ */ }
+  try {
+    const hit = (await searchBooks(isbn13 || [c.title, c.author].filter(Boolean).join(' ')))[0];
+    if (hit) return { ...base, title: base.title || hit.title, author: base.author || hit.author, isbn13: isbn13 || hit.isbn13, publisher: hit.publisher, year: hit.year, description: hit.description, matched: 'google' };
+  } catch { /* 補えなくても書名だけで登録できる */ }
+  return base;
+}
+
+async function parseWants() {
+  const box = document.getElementById('w-preview');
+  const cands = parseWantText(document.getElementById('w-text').value);
+  if (!cands.length) { box.innerHTML = `<p class="list-section__footer">本が見つかりませんでした。1行に1冊ずつ貼ってください。</p>`; return; }
+  box.innerHTML = `<p class="list-section__footer">${cands.length}件を照合しています…</p>`;
+  const resolved = [];
+  for (let i = 0; i < cands.length; i += 3) resolved.push(...await Promise.all(cands.slice(i, i + 3).map(resolveWant)));
+  box.innerHTML = `<ul class="list list--inset">${resolved.map((c, i) => {
+    const mine = findOnShelf(c);
+    return `<li class="list__row want-row">
+      <input type="checkbox" data-w="${i}" ${mine ? '' : 'checked'} aria-label="追加する">
+      ${coverHtml({ title: c.title || '?', isbn13: c.isbn13, itemId: c.asin, id: '' })}
+      <div class="list__text">
+        <input class="want-title" data-wt="${i}" value="${esc(c.title)}" placeholder="${c.asin ? `Kindle本 ${esc(c.asin)}(書名を入れてください)` : '書名'}">
+        <input class="want-author" data-wa="${i}" value="${esc(c.author || '')}" placeholder="著者">
+        <span class="list__subtitle">${esc([c.publisher, c.year, mine ? `登録済み(${STATUS_LABEL[mine.status]})` : '', c.short ? '短縮URLは読めないので書名で照合' : ''].filter(Boolean).join(' ・ '))}</span>
+      </div></li>`;
+  }).join('')}</ul>
+    <div class="actions"><button class="btn btn--prominent" id="w-add">選んだ本を読みたいに追加</button></div>`;
+  document.getElementById('w-add').addEventListener('click', async () => {
+    const picked = resolved.map((c, i) => ({ ...c, title: box.querySelector(`[data-wt="${i}"]`).value.trim(), author: box.querySelector(`[data-wa="${i}"]`).value.trim(), on: box.querySelector(`[data-w="${i}"]`).checked }))
+      .filter(c => c.on && c.title);
+    const n = await addWants(picked, document.getElementById('w-source').value);
+    toast(`${n}冊を「読みたい」に追加しました`);
+    location.hash = '#shelf';
+    shelfFilter = 'want';
+  });
+}
+
+async function addWants(list, source) {
+  const books = [];
+  for (const c of list) {
+    const mine = findOnShelf(c);
+    if (mine) {
+      if (source && mine.status === 'want' && !mine.wantSource) { mine.wantSource = source; books.push(mine); }
+      continue;
+    }
+    books.push({ id: db.uid(), isbn13: c.isbn13 || null, itemId: c.asin || null, title: c.title, author: c.author || '', publisher: c.publisher || '', year: c.year || '',
+      pages: c.pages || null, description: c.description || '', tags: [], subjects: [], ndc: null, cover: c.thumbnail || null, format: c.asin && /^B/.test(c.asin) ? 'ebook' : 'paper',
+      status: 'want', wantSource: source || null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), source: 'app' });
+  }
+  await db.putMany('books', books);
+  await load();
+  return books.filter(b => b.createdAt === b.updatedAt).length;
+}
+
+// 地元の図書館の貸出状況(カーリル)
+async function libraryConfig() {
+  const [appkey, systemid, name] = await Promise.all([db.getMeta('calilKey', ''), db.getMeta('calilSystem', ''), db.getMeta('calilName', '')]);
+  return { appkey, systemid: systemid || 'Osaka_Suita', name: name || '吹田市立図書館' };
+}
+
+async function checkBooksAtLibrary(books) {
+  const cfg = await libraryConfig();
+  const targets = books.filter(b => b.isbn13);
+  const res = await checkLibrary({ appkey: cfg.appkey, systemid: cfg.systemid, isbns: targets.map(b => b.isbn13) });
+  for (const b of targets) if (res.has(b.isbn13)) b.library = res.get(b.isbn13);
+  await db.putMany('books', targets.filter(b => b.library));
+  return { checked: targets.length, skipped: books.length - targets.length };
+}
+
+function wantLabel(b) {
+  const src = (WANT_SOURCES.find(([k]) => k === (b.wantSource || '')) || [])[1];
+  return [b.wantSource ? src : '', b.library ? `図書館: ${b.library.status}` : ''].filter(Boolean).join(' ・ ');
 }
 
 async function addBook(info, format) {
@@ -605,6 +720,7 @@ function renderBook(id) {
         ${(book.ndc || (book.subjects || []).length) ? `<div class="tags">${book.ndc ? `<span class="tag">NDC ${esc(book.ndc)}</span>` : ''}${(book.subjects || []).map(s => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}
       </div>
     </div>
+    ${book.status === 'want' && book.isbn13 ? `<section class="list-section"><h2 class="list-section__header">図書館</h2><div id="library"></div></section>` : ''}
     <section class="list-section" id="summary-section">
       <h2 class="list-section__header">概要</h2>
       <div id="summary"><p class="list-section__footer">${navigator.onLine ? '探しています…' : 'オフラインのため表示できません。'}</p></div>
@@ -613,6 +729,7 @@ function renderBook(id) {
       <div class="row"><label for="b-status">状態</label><select id="b-status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${book.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row"><label for="b-format">媒体</label><select id="b-format">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<option value="${k}" ${book.format === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row"><label for="b-pages">ページ数</label><input id="b-pages" inputmode="numeric" value="${esc(book.pages || '')}"></div>
+      ${book.status === 'want' ? `<div class="row"><label for="b-wsrc">入手先</label><select id="b-wsrc">${WANT_SOURCES.map(([k, l]) => `<option value="${k}" ${k === (book.wantSource || '') ? 'selected' : ''}>${l}</option>`).join('')}</select></div>` : ''}
       <div class="row"><label for="b-cat">カテゴリ</label><select id="b-cat"><option value="">未分類</option>${[...new Set([...state.categories, ...(book.category ? [book.category] : [])])].map(c => `<option ${c === book.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
       <div class="row score-row"><label for="b-score">評価</label>
         <input id="b-score" type="range" min="1" max="10" step="1" value="${scoreOf(book) || 5}" class="${scoreOf(book) ? '' : 'is-unset'}" aria-valuetext="${scoreOf(book) ? `${scoreOf(book)}点` : '未評価'}">
@@ -662,6 +779,9 @@ function renderBook(id) {
     renderBook(id);
   };
   ['b-status', 'b-format', 'b-pages', 'b-added', 'b-started', 'b-finished'].forEach(i => document.getElementById(i).addEventListener('change', update));
+  const wsrc = document.getElementById('b-wsrc');
+  if (wsrc) wsrc.addEventListener('change', async () => { book.wantSource = wsrc.value || null; await saveBook(book); toast('入手先を保存しました'); });
+  if (book.status === 'want' && book.isbn13) showLibrary(book);
   document.getElementById('b-cat').addEventListener('change', async e => {
     book.category = e.target.value || null;
     book.categoryBy = book.category ? 'user' : null;
@@ -748,6 +868,26 @@ async function loadSummary(book) {
   if (r) { book.description = r.text; book.descriptionSource = r.source; invalidate(); }
   await db.put('books', book); // 並び順を変えないよう updatedAt は触らない
   if (bookById(book.id) && location.hash === `#book/${book.id}`) showSummary(book);
+}
+
+async function showLibrary(book, force = false) {
+  const box = document.getElementById('library');
+  if (!box) return;
+  const cfg = await libraryConfig();
+  if (!cfg.appkey) { box.innerHTML = `<p class="list-section__footer">設定でカーリルのキーを入れると、${esc(cfg.name)}の貸出状況が出ます。</p>`; return; }
+  const fresh = book.library && Date.now() - Date.parse(book.library.at) < 864e5;
+  if (force || !fresh) {
+    box.innerHTML = `<p class="list-section__footer">${esc(cfg.name)}を確認しています…</p>`;
+    try { await checkBooksAtLibrary([book]); } catch (e) { box.innerHTML = `<p class="list-section__footer">${esc(e.message)}</p>`; return; }
+  }
+  const L = book.library;
+  if (!L || !document.body.contains(box)) return;
+  const libs = Object.entries(L.libs || {});
+  box.innerHTML = `<div class="card"><p style="margin:0"><b>${esc(L.status)}</b> <span class="small muted">${esc(cfg.name)}</span></p>
+    ${libs.length ? `<p class="small muted" style="margin:var(--space-1) 0 0">${libs.map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(' / ')}</p>` : ''}
+    <div class="note__tools">${L.reserveurl ? `<a class="btn btn--small btn--tinted" href="${esc(L.reserveurl)}" target="_blank" rel="noopener">予約ページを開く</a>` : ''}<button class="btn btn--small btn--plain" id="lib-refresh">確認し直す</button></div></div>
+    <p class="list-section__footer">カーリルの情報です(${fmtDate(L.at)}確認)。</p>`;
+  document.getElementById('lib-refresh').addEventListener('click', () => showLibrary(book, true));
 }
 
 // ---------- 関連する本 ----------
@@ -932,6 +1072,7 @@ async function renderSettings() {
     navigator.storage && navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false),
     db.getMeta('booksKey', ''),
   ]);
+  const calil = await libraryConfig();
   const imported = state.books.filter(b => b.source === 'booklog').length;
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   $view.innerHTML = `
@@ -961,6 +1102,14 @@ async function renderSettings() {
       <div class="card" style="margin-top:var(--space-3)"><p class="small" style="margin:0">未分類 <b id="cat-left">${state.books.filter(b => !b.category).length}</b>冊</p><p class="small muted" id="cat-progress" style="margin:var(--space-1) 0 0"></p></div>
       <div class="actions"><button class="btn btn--tinted" id="cat-auto">未分類の本をまとめて分類</button></div>
       <p class="list-section__footer">国立国会図書館の分類(NDC)が分かる本はそれを使い、残りは書名と著者名だけをGeminiに送って分類します(100冊ずつ)。結果は本の詳細でいつでも直せます。</p>
+    </section>
+    <section class="list-section"><h2 class="list-section__header">図書館(カーリル)</h2>
+      <div class="card">
+        <div class="row"><label for="c-key">アプリキー</label><input id="c-key" type="password" autocomplete="off" value="${esc(calil.appkey)}" placeholder="カーリルで無料登録"></div>
+        <div class="row"><label for="c-name">図書館</label><input id="c-name" value="${esc(calil.name)}"></div>
+        <div class="row"><label for="c-sys">システムID</label><input id="c-sys" value="${esc(calil.systemid)}"></div>
+      </div>
+      <p class="list-section__footer">「読みたい」の本が地元の図書館にあるか、貸出中かを確かめます。キーは calil.jp/api/dashboard/ で無料で取れます。吹田市立図書館のシステムIDは Osaka_Suita です。</p>
     </section>
     <section class="list-section"><h2 class="list-section__header">書影と本の情報</h2>
       <div class="card">
@@ -1000,6 +1149,10 @@ async function renderSettings() {
     toast('保存しました');
   });
   document.getElementById('diag').addEventListener('click', runDiagnostics);
+  [['c-key', 'calilKey'], ['c-name', 'calilName'], ['c-sys', 'calilSystem']].forEach(([id, key]) => document.getElementById(id).addEventListener('change', async e => {
+    await db.setMeta(key, e.target.value.trim());
+    toast('保存しました');
+  }));
   document.getElementById('cat-list').addEventListener('change', async e => {
     state.categories = parseCategories(e.target.value);
     await db.setMeta('categories', state.categories.join('\n'));

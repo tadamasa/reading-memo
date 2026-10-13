@@ -105,3 +105,33 @@ test('関連する本: AIの返答の読み取りとAmazonリンク', () => {
   assert.equal(amazonSearchUrl({ title: '三体', author: '劉慈欣' }), 'https://www.amazon.co.jp/s?k=%E4%B8%89%E4%BD%93%20%E5%8A%89%E6%85%88%E6%AC%A3&i=stripbooks');
   assert.match(buildDiscoverPrompt({ book: { title: 'T', author: 'A' }, recentTitles: ['X'] }), /遠いのに通じる/);
 });
+
+import { parseWantText } from '../js/wantimport.js';
+test('読みたいの貼り付け: URL・ISBN・図書館とAmazonの一覧', () => {
+  const r = parseWantText(`Amazon.co.jp: 動的平衡 : 福岡伸一: 本
+https://www.amazon.co.jp/dp/4334037437?ref=xx
+https://www.amazon.co.jp/%E4%B8%89%E4%BD%93/dp/B0BQ7F7Q5Z/ref=sr_1_1
+ISBN978-4-15-209870-3
+パターン・ランゲージ / クリストファー・アレグザンダー 著
+予約日 2026/09/01
+予約順位 3
+都市はツリーではない
+クリストファー・アレグザンダー (著)
+￥2,200
+https://amzn.asia/d/abc123`);
+  assert.equal(r.length, 5);
+  assert.deepEqual([r[0].title, r[0].author, r[0].asin], ['動的平衡', '福岡伸一', '4334037437']);
+  assert.equal(r[1].asin, 'B0BQ7F7Q5Z');
+  assert.equal(r[2].isbn, '9784152098703');
+  assert.deepEqual([r[3].title, r[3].author], ['パターン・ランゲージ', 'クリストファー・アレグザンダー']);
+  assert.deepEqual([r[4].title, r[4].author], ['都市はツリーではない', 'クリストファー・アレグザンダー']);
+  assert.equal(r[4].short, true); // URLだけの短縮リンクは直前の書名に付く
+});
+
+import { summarize } from '../js/calil.js';
+test('カーリルの結果を一言にまとめる', () => {
+  assert.equal(summarize({ status: 'OK', libkey: { 中央: '貸出中', 千里山: '貸出可' } }).status, '貸出可');
+  assert.equal(summarize({ status: 'OK', libkey: { 中央: '貸出中' } }).status, '貸出中');
+  assert.equal(summarize({ status: 'OK', libkey: {} }).status, '蔵書なし');
+  assert.equal(summarize({ status: 'Error' }).status, '確認できず');
+});
