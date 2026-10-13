@@ -7,22 +7,25 @@ export const LENSES = [
   ['near', '近い', '同じ問いを別の角度から扱う本'],
   ['far', '遠いのに通じる', '分野はまったく違うが、考え方の構造が通じる本'],
   ['counter', '反対側から', '異なる立場や批判的な視点から同じ主題を扱う本'],
+  ['unknown', 'まだ触れていない領域', 'この読者がほとんど読んでいない分野から、この本を入口にして踏み込める本'],
 ];
 
-export function buildDiscoverPrompt({ book, notes = [], recentTitles = [] }) {
+export function buildDiscoverPrompt({ book, notes = [], recentTitles = [], rareFields = [] }) {
   return [
     'あなたは読書の相談相手です。次の本を読んだ人に、次に読む本を提案してください。',
+    'この読者の読書の狙いは、自分がまだ触れていない考え方・知識・経験に出会うことです。仕事や今の関心に寄せる必要はありません。',
     `本: 『${book.title}』${book.author ? ` ${book.author}` : ''}${book.year ? `(${book.year})` : ''}`,
     book.category ? `カテゴリ: ${book.category}` : '',
     book.description ? `概要: ${book.description.slice(0, 400)}` : '',
     ...notes.slice(0, 5).map(n => `読者のメモ: ${[n.quote, n.text].filter(Boolean).join(' / ').slice(0, 200)}`),
     recentTitles.length ? `読者が最近読んだ本(これらは除く): ${recentTitles.join('、')}` : '',
+    rareFields.length ? `読者がほとんど読んでいない分野: ${rareFields.join('、')}` : '',
     '',
-    '次の三つの観点で、それぞれ3冊ずつ、実在する本だけを挙げてください。存在が確かでない本は挙げないでください。日本語で読める本を優先します。',
+    '次の四つの観点で、それぞれ3冊ずつ、実在する本だけを挙げてください。存在が確かでない本は挙げないでください。日本語で読める本を優先します。',
     ...LENSES.map(([key, label, desc]) => `- ${key}(${label}): ${desc}`),
     '「遠いのに通じる」は、元の本と分野が離れているほど良い提案です。',
     '出力は次の形のJSON配列だけにしてください。reason は、元の本のどこと何が通じるのかを40字以内で具体的に書きます。',
-    '[{"lens":"near|far|counter","title":"書名","author":"著者","year":"刊行年","reason":"理由"}]',
+    '[{"lens":"near|far|counter|unknown","title":"書名","author":"著者","year":"刊行年","reason":"理由"}]',
   ].filter(Boolean).join('\n');
 }
 

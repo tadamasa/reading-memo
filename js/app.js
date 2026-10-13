@@ -902,7 +902,11 @@ async function discover(book) {
       const model = (await db.getMeta('geminiModel')) || gemini.DEFAULT_MODEL;
       const recentTitles = state.books.filter(b => b.status === 'done' && b.id !== book.id)
         .sort((a, b) => (b.finishedAt || '').localeCompare(a.finishedAt || '')).slice(0, 60).map(b => b.title.replace(/[(（].*$/, '').trim());
-      const text = await gemini.generateJson({ apiKey, model, prompt: buildDiscoverPrompt({ book, notes: notesOf(book.id), recentTitles }) });
+      // カテゴリが付いていれば、読んだ冊数の少ない分野を「まだ触れていない領域」の手がかりにする
+      const counts = new Map(state.categories.filter(c => c !== 'その他').map(c => [c, 0]));
+      for (const b of state.books) if (b.status === 'done' && counts.has(b.category)) counts.set(b.category, counts.get(b.category) + 1);
+      const rareFields = state.books.some(b => b.category) ? [...counts].sort((a, b) => a[1] - b[1]).slice(0, 4).map(([c]) => c) : [];
+      const text = await gemini.generateJson({ apiKey, model, prompt: buildDiscoverPrompt({ book, notes: notesOf(book.id), recentTitles, rareFields }) });
       items = parseDiscoverResult(text, state.books.filter(b => b.id !== book.id));
       source = 'gemini';
     } else {
