@@ -94,3 +94,14 @@ test('カテゴリ: NDCからの対応とAIの返答の読み取り', () => {
   assert.deepEqual(parseCategories('  A\nB\n\nA '), ['A', 'B']);
   assert.equal(parseCategories('').length, DEFAULT_CATEGORIES.length);
 });
+
+import { parseDiscoverResult, amazonSearchUrl, buildDiscoverPrompt } from '../js/discover.js';
+test('関連する本: AIの返答の読み取りとAmazonリンク', () => {
+  const shelf = [{ id: 'm1', title: '生物と無生物のあいだ (講談社現代新書)' }];
+  const r = parseDiscoverResult('[{"lens":"far","title":"生物と無生物のあいだ","author":"福岡伸一","reason":"x"},{"lens":"near","title":"A","author":"B"},{"lens":"bad","title":"C"},{"lens":"near","title":"A"}]', shelf);
+  assert.equal(r.length, 2);
+  assert.equal(r[0].mineId, 'm1');
+  assert.equal(parseDiscoverResult('not json').length, 0);
+  assert.equal(amazonSearchUrl({ title: '三体', author: '劉慈欣' }), 'https://www.amazon.co.jp/s?k=%E4%B8%89%E4%BD%93%20%E5%8A%89%E6%85%88%E6%AC%A3&i=stripbooks');
+  assert.match(buildDiscoverPrompt({ book: { title: 'T', author: 'A' }, recentTitles: ['X'] }), /遠いのに通じる/);
+});

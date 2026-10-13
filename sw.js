@@ -1,11 +1,11 @@
 // アプリ本体をキャッシュして、電波がなくても開けるようにする。
 // 書誌検索やAIなど外部APIはキャッシュしない。
-const VERSION = 'v8';
+const VERSION = 'v9';
 const CACHE = `reading-memo-${VERSION}`;
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest',
   'css/hig-tokens.css', 'css/hig-components.css', 'css/app.css',
-  'js/app.js', 'js/db.js', 'js/booklog.js', 'js/related.js', 'js/books.js', 'js/stats.js', 'js/categories.js', 'js/gemini.js', 'js/backup.js',
+  'js/app.js', 'js/db.js', 'js/booklog.js', 'js/related.js', 'js/books.js', 'js/stats.js', 'js/categories.js', 'js/discover.js', 'js/gemini.js', 'js/backup.js',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 

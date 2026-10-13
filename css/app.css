@@ -178,3 +178,10 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .cat-table th, .cat-table td { text-align: right; padding: 6px 4px; border-bottom: var(--hairline) solid var(--color-separator); white-space: nowrap; }
 .cat-table th:first-child, .cat-table td:first-child { text-align: left; white-space: normal; }
 #cat-list { min-height: 180px; font-size: 15px; line-height: 22px; }
+
+/* 関連する本 */
+.discover-row { align-items: flex-start; padding-top: var(--space-3); padding-bottom: var(--space-3); }
+.discover-why { font-size: 13px; line-height: 18px; color: var(--color-label); margin-top: 2px; }
+.discover-actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
+.discover-lens { margin: var(--space-4) 0 var(--space-2); }
+.discover-lens b { color: var(--color-label); font-weight: 600; margin-right: 4px; }

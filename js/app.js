@@ -2,8 +2,9 @@ import * as db from './db.js';
 import { parseBooklog } from './booklog.js';
 import { buildIndex } from './related.js';
 import { DEFAULT_CATEGORIES, ndcToCategory, parseCategories, buildClassifyPrompt, parseClassifyResult } from './categories.js';
+import { LENSES, buildDiscoverPrompt, parseDiscoverResult, amazonSearchUrl } from './discover.js';
 import { statsHtml, attachTooltips, scoreOf } from './stats.js';
-import { searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, bookSummary, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks } from './books.js';
+import { parseNdlItems, searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, bookSummary, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks } from './books.js';
 import * as gemini from './gemini.js';
 import { exportData, importData } from './backup.js';
 
@@ -599,6 +600,7 @@ function renderBook(id) {
       <div>
         <h2>${esc(book.title)}</h2>
         <p class="muted">${esc([book.author, book.publisher, book.year].filter(Boolean).join(' ・ '))}</p>
+        ${book.wantReason ? `<p class="small muted">きっかけ ${esc(book.wantReason)}</p>` : ''}
         ${book.category ? `<div class="tags tags--cat"><span class="tag tag--cat">${esc(book.category)}${book.categoryBy === 'ai' ? '(AI)' : ''}</span></div>` : ''}
         ${(book.ndc || (book.subjects || []).length) ? `<div class="tags">${book.ndc ? `<span class="tag">NDC ${esc(book.ndc)}</span>` : ''}${(book.subjects || []).map(s => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}
       </div>
@@ -625,6 +627,10 @@ function renderBook(id) {
       ${notes.length ? `<ul class="list list--inset">${notes.map(n => noteHtml(n, { showBook: n.bookId !== book.id })).join('')}</ul>` : `<p class="list-section__footer">まだメモはありません。</p>`}
     </section>
     ${reunionSection(found, '関連しそうな過去の読書')}
+    <section class="list-section" id="discover-section">
+      <h2 class="list-section__header">関連する本</h2>
+      <div id="discover">${book.related ? '' : `<div class="actions" style="padding-top:0"><button class="btn btn--tinted" id="discover-go">関連する本を探す</button></div>`}</div>
+    </section>
     ${linksSection(book)}
     <section class="list-section" id="author-section" ${book.author ? '' : 'hidden'}>
       <h2 class="list-section__header">${esc(firstName(book.author))}の他の作品</h2>
@@ -635,6 +641,8 @@ function renderBook(id) {
     <div class="actions"><button class="btn btn--plain" id="b-ndl">国立国会図書館の件名を補う</button></div>`;
   if (book.author) loadAuthor(book);
   loadSummary(book);
+  if (book.related) showDiscover(book);
+  else document.getElementById('discover-go').addEventListener('click', () => discover(book));
   const update = async e => {
     book.status = document.getElementById('b-status').value;
     book.format = document.getElementById('b-format').value;
@@ -740,6 +748,93 @@ async function loadSummary(book) {
   if (r) { book.description = r.text; book.descriptionSource = r.source; invalidate(); }
   await db.put('books', book); // 並び順を変えないよう updatedAt は触らない
   if (bookById(book.id) && location.hash === `#book/${book.id}`) showSummary(book);
+}
+
+// ---------- 関連する本 ----------
+// ボタンを押したときだけ探す。Geminiのキーがあれば三つのレンズで提案、なければ国会図書館の件名で探す。
+async function discover(book) {
+  const box = document.getElementById('discover');
+  box.innerHTML = `<p class="list-section__footer">探しています…</p>`;
+  try {
+    const apiKey = await db.getMeta('geminiKey');
+    let items, source;
+    if (apiKey) {
+      const model = (await db.getMeta('geminiModel')) || gemini.DEFAULT_MODEL;
+      const recentTitles = state.books.filter(b => b.status === 'done' && b.id !== book.id)
+        .sort((a, b) => (b.finishedAt || '').localeCompare(a.finishedAt || '')).slice(0, 60).map(b => b.title.replace(/[(（].*$/, '').trim());
+      const text = await gemini.generateJson({ apiKey, model, prompt: buildDiscoverPrompt({ book, notes: notesOf(book.id), recentTitles }) });
+      items = parseDiscoverResult(text, state.books.filter(b => b.id !== book.id));
+      source = 'gemini';
+    } else {
+      items = await discoverBySubject(book);
+      source = 'ndl';
+    }
+    book.related = { at: new Date().toISOString(), source, items };
+    await db.put('books', book);
+    if (document.body.contains(box)) showDiscover(book);
+  } catch (e) {
+    if (!document.body.contains(box)) return;
+    box.innerHTML = `<p class="list-section__footer">探せませんでした(${esc(e.message)})。</p><div class="actions" style="padding-top:0"><button class="btn btn--tinted" id="discover-go">もう一度探す</button></div>`;
+    document.getElementById('discover-go').addEventListener('click', () => discover(book));
+  }
+}
+
+// キーがないとき: 件名(NDL)が分かればその件名で、なければカテゴリ名で国会図書館サーチを引く
+async function discoverBySubject(book) {
+  if (!(book.subjects || []).length) {
+    const r = await ndlSubjects(book);
+    if (r && (r.ndc || r.subjects.length)) { Object.assign(book, r); await db.put('books', book); }
+  }
+  const subject = (book.subjects || [])[0];
+  if (!subject) throw new Error('件名が見つかりません。設定でGeminiのキーを入れると、AIが関連する本を提案します');
+  const res = await fetch(`https://ndlsearch.ndl.go.jp/api/opensearch?subject=${encodeURIComponent(subject)}&mediatype=books&cnt=40`);
+  if (!res.ok) throw new Error(`国立国会図書館サーチ ${res.status}`);
+  const norm = s => (s || '').normalize('NFKC').replace(/[\s(（:：].*$/, '').toLowerCase();
+  const seen = new Set([norm(book.title)]);
+  return parseNdlItems(await res.text()).filter(w => { const k = norm(w.title); if (!k || seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => (b.year || '').localeCompare(a.year || '')).slice(0, 12)
+    .map(w => {
+      const mine = state.books.find(b => norm(b.title) === norm(w.title));
+      return { lens: 'subject', title: w.title, author: w.author, year: w.year, isbn13: w.isbn13, reason: `件名「${subject}」`, mineId: mine ? mine.id : null };
+    });
+}
+
+function showDiscover(book) {
+  const box = document.getElementById('discover');
+  if (!box) return;
+  const { items = [], source, at } = book.related || {};
+  const row = (x, i) => {
+    const mine = x.mineId && bookById(x.mineId);
+    return `<li class="list__row discover-row">${coverHtml({ title: x.title, isbn13: x.isbn13 || null, id: '' })}
+      <div class="list__text"><span class="list__title">${esc(x.title)}</span>
+        <span class="list__subtitle">${esc([x.author, x.year].filter(Boolean).join(' ・ '))}</span>
+        ${x.reason ? `<span class="discover-why">${esc(x.reason)}</span>` : ''}
+        <span class="discover-actions">
+          <a class="btn btn--small btn--plain" href="${esc(amazonSearchUrl(x))}" target="_blank" rel="noopener">Amazon</a>
+          ${mine ? `<a class="btn btn--small btn--plain" href="#book/${esc(mine.id)}">${esc(STATUS_LABEL[mine.status])}</a>`
+            : `<button class="btn btn--small btn--tinted" data-dwant="${i}">読みたい</button>`}
+        </span></div></li>`;
+  };
+  const groups = source === 'gemini'
+    ? LENSES.map(([k, label, desc]) => [label, desc, items.map((x, i) => [x, i]).filter(([x]) => x.lens === k)]).filter(g => g[2].length)
+    : [['同じ件名の本', '', items.map((x, i) => [x, i])]];
+  box.innerHTML = (items.length ? groups.map(([label, desc, list]) => `
+      <p class="list-section__footer discover-lens"><b>${esc(label)}</b>${desc ? ` ${esc(desc)}` : ''}</p>
+      <ul class="list list--inset">${list.map(([x, i]) => row(x, i)).join('')}</ul>`).join('')
+    : `<p class="list-section__footer">関連する本は見つかりませんでした。</p>`) + `
+    <p class="list-section__footer">${source === 'gemini' ? 'Geminiの提案です。実在しない本が混じることがあるので、Amazonで確かめてください。' : '国立国会図書館サーチの件名で探しました。'} ${fmtDate(at)}</p>
+    <div class="actions" style="padding-top:0"><button class="btn btn--plain" id="discover-go">探し直す</button></div>`;
+  document.getElementById('discover-go').addEventListener('click', () => discover(book));
+  box.querySelectorAll('[data-dwant]').forEach(btn => btn.addEventListener('click', async () => {
+    const x = items[Number(btn.dataset.dwant)];
+    const nb = { id: db.uid(), isbn13: x.isbn13 || null, title: x.title, author: x.author, publisher: '', year: x.year, pages: null, description: '',
+      tags: [], subjects: [], ndc: null, cover: null, format: 'paper', status: 'want', createdAt: new Date().toISOString(), source: 'app', wantReason: `『${book.title.replace(/[(（].*$/, '').trim()}』から${x.reason ? `: ${x.reason}` : ''}` };
+    await saveBook(nb);
+    x.mineId = nb.id;
+    await db.put('books', book);
+    btn.outerHTML = `<span class="small muted">追加済み</span>`;
+    toast('「読みたい」に追加しました');
+  }));
 }
 
 const authorCache = new Map();
