@@ -233,13 +233,16 @@ function tile(label, value, sub = '') {
 
 // ---------- 画面 ----------
 export const RANGES = [['all', '全期間'], ['10', '10年'], ['5', '5年'], ['year', '今年']];
+// 縦に長くならないよう、グラフを見る観点ごとに分けて出す
+export const STATS_VIEWS = [['overview', '冊数'], ['age', '古さ・厚さ'], ['field', '分野・著者']];
 
-export function statsHtml(books, range, { categories = [], category = '' } = {}) {
+export function statsHtml(books, range, { categories = [], category = '', view = 'overview' } = {}) {
   const scoped = category ? books.filter(b => (category === '-' ? !b.category : b.category === category)) : books;
   const s = computeStats(scoped, range);
   const cats = categoryStats(computeStats(books, range).read, categories);
   const hasCats = books.some(b => b.category);
   const filter = `<div class="segmented-wrap"><div class="segmented" role="tablist">${RANGES.map(([k, l]) => `<button class="segmented__item ${k === range ? 'is-active' : ''}" role="tab" aria-selected="${k === range}" data-range="${k}">${l}</button>`).join('')}</div></div>
+    <div class="segmented-wrap"><div class="segmented segmented--wide" role="tablist">${STATS_VIEWS.map(([k, l]) => `<button class="segmented__item ${k === view ? 'is-active' : ''}" role="tab" aria-selected="${k === view}" data-sview="${k}">${l}</button>`).join('')}</div></div>
     ${hasCats ? `<div class="sort-bar" style="padding-top:0"><label for="stats-cat">カテゴリ</label><select id="stats-cat"><option value="">すべて</option>${categories.map(c => `<option ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}<option value="-" ${category === '-' ? 'selected' : ''}>未分類</option></select></div>` : ''}`;
   if (!s.read.length) return filter + `<div class="empty"><p class="empty__message">この期間に読了日のある本はありません。</p></div>`;
   const t = s.tiles;
@@ -257,9 +260,11 @@ export function statsHtml(books, range, { categories = [], category = '' } = {})
       ${tile('平均評価', t.avgScore ? `${fmt1(t.avgScore)}` : '—', t.avgScore ? `10点満点・${s.scores.length}冊` : '評価はまだありません')}
       ${t.medianWait !== null ? tile('登録から読了まで', `${Math.round(t.medianWait)}日`, `中央値・${s.waits.length}冊`) : ''}
     </div>
+    <div ${view === 'overview' ? '' : 'hidden'}>
     ${card('年ごとの読了冊数', '', columns(yearData.map(shortYear), { labelEvery: every }),
       table(['年', '冊数'], yearData.map(d => [d.label, d.value])))}
     ${card('月ごとの読了冊数', '色がはっきりしているほど多く読んだ月です。', heatmap(s))}
+    </div><div ${view === 'age' ? '' : 'hidden'}>
     ${card('刊行から読了までの年数', `新刊を追う読書か、古い本に遡る読書かが分かります。刊行年の分かる${s.gaps.length}冊。`,
       columns(s.gapHist, { height: 140 }), table(['年数', '冊数'], s.gapHist.map(d => [d.label, d.value])))}
     ${card('読んだ本の「古さ」の推移', '各年に読んだ本の、刊行から読了までの年数(中央値)。3冊未満の年は除きます。',
@@ -269,12 +274,14 @@ export function statsHtml(books, range, { categories = [], category = '' } = {})
       table(['ページ数', '冊数'], s.pageHist.map(d => [d.label, d.value])))}
     ${card('平均ページ数の推移', '3冊未満の年は除きます。', line(s.pagesByYear.map(shortYear), { unit: 'ページ', labelEvery: every }),
       table(['年', '平均ページ', '冊数'], s.pagesByYear.map(d => [d.label, d.value === null ? '—' : Math.round(d.value), d.n])))}
+    </div><div ${view === 'field' ? '' : 'hidden'}>
     ${card('媒体の内訳', '', stacked(s.formatByYear.map(shortYear), { labelEvery: every }),
       table(['年', ...FORMATS.map(([, l]) => l)], s.formatByYear.map(d => [d.label, ...d.parts])))}
     ${category ? '' : categorySection(cats, hasCats)}
     ${s.topAuthors.length ? card('よく読む著者', '2冊以上読んだ著者の上位10人。', hbars(s.topAuthors)) : ''}
     ${s.scores.length ? card('評価の分布', 'ブクログの5段階評価は2倍して10点に換算しています。', columns(s.scoreHist, { height: 130 }),
-      table(['点', '冊数'], s.scoreHist.map(d => [d.label, d.value]))) : ''}`;
+      table(['点', '冊数'], s.scoreHist.map(d => [d.label, d.value]))) : ''}
+    </div>`;
 }
 
 // ---------- カテゴリ ----------

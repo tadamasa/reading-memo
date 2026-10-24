@@ -142,10 +142,10 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .hero__value { font-size: 52px; line-height: 56px; font-weight: 700; letter-spacing: -1px; }
 .hero__value small { font-size: 20px; font-weight: 600; margin-left: 4px; }
 .hero__label { font-size: 15px; color: var(--color-label-secondary); }
-.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); margin: 0 var(--space-4); }
-.tile { background: var(--bg-grouped-secondary); border-radius: var(--r-card); padding: var(--space-3); display: flex; flex-direction: column; gap: 2px; }
-.tile__label { font-size: 13px; color: var(--color-label-secondary); }
-.tile__value { font-size: 24px; line-height: 30px; font-weight: 600; }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); margin: 0 var(--space-4); }
+.tile { background: var(--bg-grouped-secondary); border-radius: var(--r-card); padding: var(--space-2) var(--space-3); display: flex; flex-direction: column; gap: 2px; }
+.tile__label { font-size: 11px; line-height: 14px; color: var(--color-label-secondary); }
+.tile__value { font-size: 20px; line-height: 26px; font-weight: 600; }
 .tile__sub { font-size: 11px; color: var(--color-label-tertiary); }
 
 .heat { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--color-label-secondary); }
@@ -199,3 +199,74 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
   background: color-mix(in srgb, #eb6834 14%, transparent);
   font-size: 14px; line-height: 1.45;
 }
+
+/* ---------- 本の詳細: タブ ---------- */
+.pane-tabs { position: sticky; top: calc(max(var(--space-2), env(safe-area-inset-top)) + var(--hit)); z-index: 50; padding: var(--space-2) var(--space-4); background-color: var(--bg-grouped); }
+.segmented--wide { display: flex; width: 100%; box-sizing: border-box; }
+.segmented--wide .segmented__item { flex: 1; font-size: 15px; }
+.pane { padding-bottom: var(--space-4); }
+.pane > .list-section:first-child, .pane > .card:first-child { margin-top: var(--space-2); }
+
+/* 記録: 3列にまとめて縦を詰める */
+.record { padding-top: var(--space-2); padding-bottom: var(--space-2); }
+.record__grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); padding: var(--space-1) 0 var(--space-2); }
+.record__grid--dates { border-top: var(--hairline) solid var(--color-separator); padding-top: var(--space-2); }
+.record > .row + .record__grid--dates, .record__grid + .row { border-top: var(--hairline) solid var(--color-separator); }
+.mini { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mini span { font-size: 12px; line-height: 16px; color: var(--color-label-secondary); }
+.mini select, .mini input { width: 100%; min-width: 0; min-height: 36px; box-sizing: border-box; border: none; outline: none; border-radius: 8px; background-color: var(--bg-fill-quaternary); padding: 0 var(--space-2); font-size: 15px; -webkit-appearance: none; appearance: none; }
+.mini input[type="date"] { font-size: 14px; padding: 0 4px; }
+.mini select:focus-visible, .mini input:focus-visible { outline: 2px solid var(--color-accent); }
+
+/* ---------- 関連情報(広げる): この本の情報と色で分ける ---------- */
+:root { --relate: #0d7a56; --relate-tint: color-mix(in srgb, #1baf7a 11%, var(--bg-grouped)); --relate-card: color-mix(in srgb, #1baf7a 6%, var(--bg-grouped-secondary)); }
+@media (prefers-color-scheme: dark) {
+  :root { --relate: #4fd1a1; --relate-tint: color-mix(in srgb, #199e70 16%, var(--bg-grouped)); --relate-card: color-mix(in srgb, #199e70 10%, var(--bg-grouped-secondary)); }
+}
+.relate { background-color: var(--relate-tint); border-top: 3px solid var(--relate); min-height: 60vh; }
+.relate__lead { margin: 0; padding: var(--space-3) var(--space-4) 0; font-size: 13px; line-height: 18px; color: var(--relate); }
+.relate .list-section__header { color: var(--relate); font-weight: 600; }
+.relate .list--inset, .relate .card, .relate .carousel > li { background-color: var(--relate-card); }
+.relate .btn--tinted { color: var(--relate); background-color: color-mix(in srgb, var(--relate) 14%, transparent); }
+.relate .discover-lens b { color: var(--relate); }
+.pane-tabs [data-pane="relate"].is-active { color: var(--relate); }
+
+/* 横スクロールのカード列 */
+.carousel { list-style: none; margin: 0; padding: 0 var(--space-4) var(--space-1); display: flex; gap: var(--space-2); overflow-x: auto; scroll-snap-type: x mandatory; scroll-padding: 0 var(--space-4); scrollbar-width: none; }
+.carousel::-webkit-scrollbar { display: none; }
+.carousel > li { flex: 0 0 152px; box-sizing: border-box; scroll-snap-align: start; border-radius: var(--r-list); background-color: var(--bg-grouped-secondary); display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-2); padding: var(--space-3); }
+.carousel > li > .list__row { flex-direction: column; align-items: flex-start; padding: 0; gap: var(--space-2); }
+.carousel .list__row::after { display: none; }
+.carousel .cover--sm { width: 56px; height: 80px; }
+.carousel .list__text { width: 100%; flex: 1; }
+.carousel .list__title { font-size: 15px; line-height: 20px; font-weight: 600; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.carousel .list__subtitle { font-size: 12px; line-height: 16px; }
+.carousel .discover-why { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.carousel .discover-actions { flex-wrap: wrap; margin-top: auto; padding-top: var(--space-2); }
+.carousel .discover-row { padding: var(--space-3); }
+
+/* 折りたたみ(設定) */
+.fold { margin: var(--space-2) 0 0; }
+.fold:first-child { margin-top: var(--space-3); }
+.fold > summary { margin: 0 var(--space-4); border-radius: var(--r-list); background-color: var(--bg-grouped-secondary); font-weight: 600; list-style: none; display: flex; align-items: center; justify-content: space-between; min-height: var(--hit); padding: 0 var(--space-4); cursor: pointer; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::after { content: "›"; color: var(--color-label-tertiary, var(--color-label-secondary)); font-size: 20px; transition: transform .2s; }
+.fold[open] > summary::after { transform: rotate(90deg); }
+.fold > summary small { color: var(--color-label-secondary); font-size: 13px; margin-left: auto; margin-right: var(--space-2); }
+.fold__body { padding: var(--space-3) 0 var(--space-2); }
+.fold__body > .card:first-child { margin-top: 0; }
+
+
+.note__quote.is-clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.note__text.is-clamped { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.note__more { margin-top: var(--space-1); }
+.lens { display: inline-block; font-size: 11px; line-height: 16px; font-weight: 600; padding: 0 6px; border-radius: var(--r-capsule); color: var(--relate); background-color: color-mix(in srgb, var(--relate) 14%, transparent); }
+.discover-legend { margin: 0 var(--space-4) var(--space-2); font-size: 13px; line-height: 18px; color: var(--color-label-secondary); }
+.discover-legend summary { color: var(--relate); cursor: pointer; min-height: 32px; display: flex; align-items: center; }
+.discover-legend p { margin: var(--space-1) 0; }
+.relate .fold > summary { background-color: var(--relate-card); color: var(--relate); }
+.relate [data-reunion] { display: flex; gap: var(--space-2); overflow-x: auto; scroll-snap-type: x mandatory; scroll-padding: 0 var(--space-4); margin: 0; padding: 0 var(--space-4) var(--space-1); background: none; border-radius: 0; scrollbar-width: none; }
+.relate [data-reunion]::-webkit-scrollbar { display: none; }
+.relate [data-reunion] > li { flex: 0 0 80%; box-sizing: border-box; scroll-snap-align: start; border-radius: var(--r-list); background-color: var(--relate-card); }
+.relate [data-reunion] > li::after { display: none; }
+.relate .btn--plain { color: var(--relate); }

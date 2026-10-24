@@ -702,6 +702,9 @@ async function addBook(info, format) {
 }
 
 // ---------- 本の詳細 ----------
+// 縦に長くならないよう、この本の記録・メモ・関連情報をタブで分ける。選んだタブは画面をまたいで覚えておく。
+const BOOK_PANES = [['book', 'この本'], ['notes', 'メモ'], ['relate', '広げる']];
+let bookPane = 'book';
 function renderBook(id) {
   const book = bookById(id);
   if (!book) { location.hash = '#shelf'; return; }
@@ -720,42 +723,64 @@ function renderBook(id) {
         ${(book.ndc || (book.subjects || []).length) ? `<div class="tags">${book.ndc ? `<span class="tag">NDC ${esc(book.ndc)}</span>` : ''}${(book.subjects || []).map(s => `<span class="tag">${esc(s)}</span>`).join('')}</div>` : ''}
       </div>
     </div>
+    <div class="pane-tabs"><div class="segmented segmented--wide" role="tablist">
+      ${BOOK_PANES.map(([k, l]) => `<button class="segmented__item ${k === bookPane ? 'is-active' : ''}" role="tab" aria-selected="${k === bookPane}" data-pane="${k}">${l}${k === 'notes' ? ` ${notes.length}` : ''}</button>`).join('')}
+    </div></div>
+
+    <div class="pane" data-pane-body="book" ${bookPane === 'book' ? '' : 'hidden'}>
     ${book.status === 'want' && book.isbn13 ? `<section class="list-section"><h2 class="list-section__header">図書館</h2><div id="library"></div></section>` : ''}
-    <section class="list-section" id="summary-section">
-      <h2 class="list-section__header">概要</h2>
-      <div id="summary"><p class="list-section__footer">${navigator.onLine ? '探しています…' : 'オフラインのため表示できません。'}</p></div>
-    </section>
-    <div class="card">
-      <div class="row"><label for="b-status">状態</label><select id="b-status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${book.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-      <div class="row"><label for="b-format">媒体</label><select id="b-format">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<option value="${k}" ${book.format === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-      <div class="row"><label for="b-pages">ページ数</label><input id="b-pages" inputmode="numeric" value="${esc(book.pages || '')}"></div>
-      ${book.status === 'want' ? `<div class="row"><label for="b-wsrc">入手先</label><select id="b-wsrc">${WANT_SOURCES.map(([k, l]) => `<option value="${k}" ${k === (book.wantSource || '') ? 'selected' : ''}>${l}</option>`).join('')}</select></div>` : ''}
-      <div class="row"><label for="b-cat">カテゴリ</label><select id="b-cat"><option value="">未分類</option>${[...new Set([...state.categories, ...(book.category ? [book.category] : [])])].map(c => `<option ${c === book.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+    <div class="card record">
+      <div class="record__grid">
+        <label class="mini"><span>状態</span><select id="b-status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${book.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="mini"><span>媒体</span><select id="b-format">${Object.entries(FORMAT_LABEL).map(([k, l]) => `<option value="${k}" ${book.format === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="mini"><span>ページ数</span><input id="b-pages" inputmode="numeric" value="${esc(book.pages || '')}" placeholder="—"></label>
+      </div>
       <div class="row score-row"><label for="b-score">評価</label>
         <input id="b-score" type="range" min="1" max="10" step="1" value="${scoreOf(book) || 5}" class="${scoreOf(book) ? '' : 'is-unset'}" aria-valuetext="${scoreOf(book) ? `${scoreOf(book)}点` : '未評価'}">
         <output id="b-score-out" for="b-score">${scoreOf(book) ? `${scoreOf(book)}<small>/10</small>` : '未評価'}</output>
         <button class="btn btn--small btn--plain" id="b-score-clear" aria-label="評価を消す" ${scoreOf(book) ? '' : 'hidden'}>消す</button></div>
-      <div class="row"><label for="b-added">登録日</label><input id="b-added" type="date" value="${dateInput(book.createdAt)}"></div>
-      <div class="row"><label for="b-started">読み始めた日</label><input id="b-started" type="date" value="${dateInput(book.startedAt)}"></div>
-      <div class="row"><label for="b-finished">読了日</label><input id="b-finished" type="date" value="${dateInput(book.finishedAt)}"></div>
+      <div class="row"><label for="b-cat">カテゴリ</label><select id="b-cat"><option value="">未分類</option>${[...new Set([...state.categories, ...(book.category ? [book.category] : [])])].map(c => `<option ${c === book.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+      ${book.status === 'want' ? `<div class="row"><label for="b-wsrc">入手先</label><select id="b-wsrc">${WANT_SOURCES.map(([k, l]) => `<option value="${k}" ${k === (book.wantSource || '') ? 'selected' : ''}>${l}</option>`).join('')}</select></div>` : ''}
+      <div class="record__grid record__grid--dates">
+        <label class="mini"><span>登録日</span><input id="b-added" type="date" value="${dateInput(book.createdAt)}"></label>
+        <label class="mini"><span>読み始め</span><input id="b-started" type="date" value="${dateInput(book.startedAt)}"></label>
+        <label class="mini"><span>読了日</span><input id="b-finished" type="date" value="${dateInput(book.finishedAt)}"></label>
+      </div>
     </div>
-    ${book.status === 'reading' ? `<div class="actions"><a class="btn btn--prominent" href="#write" id="b-write">この本にメモする</a></div>` : ''}
-    <section class="list-section"><h2 class="list-section__header">メモ ${notes.length}</h2>
+    <section class="list-section" id="summary-section">
+      <h2 class="list-section__header">概要</h2>
+      <div id="summary"><p class="list-section__footer">${navigator.onLine ? '探しています…' : 'オフラインのため表示できません。'}</p></div>
+    </section>
+    <div class="actions"><button class="btn btn--plain" id="b-ndl">国立国会図書館の件名を補う</button></div>
+    </div>
+
+    <div class="pane" data-pane-body="notes" ${bookPane === 'notes' ? '' : 'hidden'}>
+    ${book.status === 'reading' ? `<div class="actions" style="padding-top:0"><a class="btn btn--prominent" href="#write" id="b-write">この本にメモする</a></div>` : ''}
+    <section class="list-section" style="margin-top:0">
       ${notes.length ? `<ul class="list list--inset">${notes.map(n => noteHtml(n, { showBook: n.bookId !== book.id })).join('')}</ul>` : `<p class="list-section__footer">まだメモはありません。</p>`}
     </section>
+    </div>
+
+    <div class="pane relate" data-pane-body="relate" ${bookPane === 'relate' ? '' : 'hidden'}>
+    <p class="relate__lead">この本から広がる本や情報です。左右にスクロールできます。</p>
     ${reunionSection(found, '関連しそうな過去の読書')}
     <section class="list-section" id="discover-section">
       <h2 class="list-section__header">関連する本</h2>
       <div id="discover">${book.related ? '' : `<div class="actions" style="padding-top:0"><button class="btn btn--tinted" id="discover-go">関連する本を探す</button></div>`}</div>
     </section>
-    ${linksSection(book)}
     <section class="list-section" id="author-section" ${book.author ? '' : 'hidden'}>
       <h2 class="list-section__header">${esc(firstName(book.author))}の他の作品</h2>
       <div id="author-wiki"></div>
       <div id="author-mine"></div>
       <div id="author-works"><p class="list-section__footer">探しています…</p></div>
     </section>
-    <div class="actions"><button class="btn btn--plain" id="b-ndl">国立国会図書館の件名を補う</button></div>`;
+    ${linksSection(book)}
+    </div>`;
+  $view.querySelectorAll('[data-pane]').forEach(btn => btn.addEventListener('click', () => {
+    bookPane = btn.dataset.pane;
+    $view.querySelectorAll('[data-pane]').forEach(b => { const on = b === btn; b.classList.toggle('is-active', on); b.setAttribute('aria-selected', on); });
+    $view.querySelectorAll('[data-pane-body]').forEach(el => { el.hidden = el.dataset.paneBody !== bookPane; });
+  }));
   if (book.author) loadAuthor(book);
   loadSummary(book);
   if (book.related) showDiscover(book);
@@ -824,6 +849,21 @@ function renderBook(id) {
   });
   bindReunion($view, book.id, () => renderBook(id));
   bindNoteTools($view, () => renderBook(id));
+  if (bookPane === 'notes') clampNotes($view);
+  else $view.querySelector('[data-pane="notes"]').addEventListener('click', () => clampNotes($view), { once: true });
+}
+
+// 長いメモ(ブクログの感想など)は数行で畳み、押すと全文を出す
+function clampNotes(root) {
+  root.querySelectorAll('.note__text, .note__quote').forEach(p => {
+    p.classList.add('is-clamped');
+    if (p.scrollHeight <= p.clientHeight + 2) { p.classList.remove('is-clamped'); return; }
+    const btn = document.createElement('button');
+    btn.className = 'btn btn--small btn--plain note__more';
+    btn.textContent = '続きを読む';
+    btn.addEventListener('click', () => { const open = p.classList.toggle('is-clamped'); btn.textContent = open ? '続きを読む' : '閉じる'; });
+    p.after(btn);
+  });
 }
 
 function firstName(author) {
@@ -833,12 +873,12 @@ function firstName(author) {
 function linksSection(book) {
   const links = relatedLinks(book);
   const groups = [...new Set(links.map(l => l.group))];
-  return `<section class="list-section"><h2 class="list-section__header">関連リンク</h2>
+  return `<details class="fold"><summary>関連リンク<small>外部のサイトで探す</small></summary><div class="fold__body">
     <ul class="list list--inset">${groups.map(g => `<li class="list__row links-row">
       <span class="links-row__group">${esc(g)}</span>
       <span class="links-row__items">${links.filter(l => l.group === g).map(l => `<a class="btn btn--small btn--tinted" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)}</a>`).join('')}</span>
     </li>`).join('')}</ul>
-    <p class="list-section__footer">各サービスの検索結果を開きます。</p></section>`;
+    <p class="list-section__footer">各サービスの検索結果を開きます。</p></div></details>`;
 }
 
 // ---------- 概要 ----------
@@ -949,7 +989,8 @@ function showDiscover(book) {
   const { items = [], source, at } = book.related || {};
   const row = (x, i) => {
     const mine = x.mineId && bookById(x.mineId);
-    return `<li class="list__row discover-row">${coverHtml({ title: x.title, isbn13: x.isbn13 || null, id: '' })}
+    const lens = lensOf(x.lens);
+    return `<li class="list__row discover-row">${lens ? `<b class="lens lens--${esc(x.lens)}">${esc(lens[1])}</b>` : ''}${coverHtml({ title: x.title, isbn13: x.isbn13 || null, id: '' })}
       <div class="list__text"><span class="list__title">${esc(x.title)}</span>
         <span class="list__subtitle">${esc([x.author, x.year].filter(Boolean).join(' ・ '))}</span>
         ${x.reason ? `<span class="discover-why">${esc(x.reason)}</span>` : ''}
@@ -959,12 +1000,13 @@ function showDiscover(book) {
             : `<button class="btn btn--small btn--tinted" data-dwant="${i}">読みたい</button>`}
         </span></div></li>`;
   };
-  const groups = source === 'gemini'
-    ? LENSES.map(([k, label, desc]) => [label, desc, items.map((x, i) => [x, i]).filter(([x]) => x.lens === k)]).filter(g => g[2].length)
-    : [['同じ件名の本', '', items.map((x, i) => [x, i])]];
-  box.innerHTML = (items.length ? groups.map(([label, desc, list]) => `
-      <p class="list-section__footer discover-lens"><b>${esc(label)}</b>${desc ? ` ${esc(desc)}` : ''}</p>
-      <ul class="list list--inset">${list.map(([x, i]) => row(x, i)).join('')}</ul>`).join('')
+  // レンズごとに行を分けると縦に伸びるので、一本の横スクロールにまとめてレンズは札で示す
+  const lensOf = k => LENSES.find(l => l[0] === k);
+  const order = source === 'gemini' ? LENSES.map(l => l[0]) : [];
+  const sorted = items.map((x, i) => [x, i]).sort((a, b) => order.indexOf(a[0].lens) - order.indexOf(b[0].lens));
+  box.innerHTML = (items.length ? `
+      ${source === 'gemini' ? `<details class="discover-legend"><summary>4つの視点について</summary>${LENSES.filter(([k]) => items.some(x => x.lens === k)).map(([k, label, desc]) => `<p><b class="lens">${esc(label)}</b> ${esc(desc)}</p>`).join('')}</details>` : ''}
+      <ul class="list carousel">${sorted.map(([x, i]) => row(x, i)).join('')}</ul>`
     : `<p class="list-section__footer">関連する本は見つかりませんでした。</p>`) + `
     <p class="list-section__footer">${source === 'gemini' ? 'Geminiの提案です。実在しない本が混じることがあるので、Amazonで確かめてください。' : '国立国会図書館サーチの件名で探しました。'} ${fmtDate(at)}</p>
     <div class="actions" style="padding-top:0"><button class="btn btn--plain" id="discover-go">探し直す</button></div>`;
@@ -995,7 +1037,7 @@ async function loadAuthor(book) {
   const mine = state.books.filter(b => b.id !== book.id && (b.author || '').replace(/\s/g, '').includes(nameKey));
   if (mine.length) {
     mineBox.innerHTML = `<p class="list-section__footer" style="margin-bottom:var(--space-2)">本棚にある本 ${mine.length}冊</p>
-      <ul class="list list--inset">${mine.map(b => `<li><a class="list__row" href="#book/${esc(b.id)}" style="color:inherit;text-decoration:none">
+      <ul class="list carousel">${mine.map(b => `<li><a class="list__row" href="#book/${esc(b.id)}" style="color:inherit;text-decoration:none">
         ${coverHtml(b)}<div class="list__text"><span class="list__title">${esc(b.title)}</span>
         <span class="list__subtitle">${esc([STATUS_LABEL[b.status], b.year].filter(Boolean).join(' ・ '))}</span></div></a></li>`).join('')}</ul>`;
   }
@@ -1014,7 +1056,7 @@ async function loadAuthor(book) {
     const others = works.filter(w => norm(w.title) !== norm(book.title) && !(w.isbn13 && w.isbn13 === book.isbn13) && !inShelf(w));
     if (!others.length) { box.innerHTML = `<p class="list-section__footer">本棚にない作品は見つかりませんでした。</p>`; return; }
     box.innerHTML = `<p class="list-section__footer" style="margin:var(--space-4) 0 var(--space-2)">まだ読んでいない作品 ${others.length}冊</p>
-      <ul class="list list--inset">${others.map((w, i) => `<li class="list__row">${coverHtml({ ...w, id: '' })}
+      <ul class="list carousel">${others.map((w, i) => `<li class="list__row">${coverHtml({ ...w, id: '' })}
         <div class="list__text"><span class="list__title">${esc(w.title)}</span>
         <span class="list__subtitle">${esc([w.year, w.publisher].filter(Boolean).join(' ・ '))}</span></div>
         <button class="btn btn--small btn--tinted" data-want="${i}">読みたい</button></li>`).join('')}</ul>
@@ -1037,6 +1079,9 @@ async function loadAuthor(book) {
 
 // ---------- メモ一覧 ----------
 let notesQuery = '';
+// 一度に全部出すと長くなるので、少しずつ出す
+const NOTES_PAGE = 20;
+let notesShown = NOTES_PAGE;
 function renderNotes() {
   setTab('notes');
   setTitle('メモ');
@@ -1047,20 +1092,26 @@ function renderNotes() {
   $view.innerHTML = `
     <label class="search"><span aria-hidden="true">⌕</span><input id="notes-q" type="search" placeholder="メモを検索" value="${esc(notesQuery)}" aria-label="メモを検索"></label>
     <section class="list-section">
-      ${list.length ? `<ul class="list list--inset">${list.slice(0, 200).map(n => noteHtml(n, { showBook: true })).join('')}</ul>` : `<div class="empty"><p class="empty__message">メモはまだありません。</p></div>`}
+      ${list.length ? `<ul class="list list--inset">${list.slice(0, notesShown).map(n => noteHtml(n, { showBook: true })).join('')}</ul>` : `<div class="empty"><p class="empty__message">メモはまだありません。</p></div>`}
+      ${list.length > notesShown ? `<div class="actions"><button class="btn btn--tinted" id="notes-more">さらに${Math.min(NOTES_PAGE, list.length - notesShown)}件を表示(残り${list.length - notesShown}件)</button></div>` : ''}
     </section>`;
+  const more = document.getElementById('notes-more');
+  if (more) more.addEventListener('click', () => { const y = scrollY; notesShown += NOTES_PAGE; renderNotes(); scrollTo(0, y); });
   const input = document.getElementById('notes-q');
-  input.addEventListener('change', () => { notesQuery = input.value; renderNotes(); });
+  input.addEventListener('change', () => { notesQuery = input.value; notesShown = NOTES_PAGE; renderNotes(); });
   bindNoteTools($view, renderNotes);
+  clampNotes($view);
 }
 
 // ---------- 分析 ----------
 let statsRange = 'all';
 let statsCat = '';
+let statsView = 'overview';
 function renderStats() {
   setTab('stats');
   setTitle('分析');
-  $view.innerHTML = statsHtml(state.books, statsRange, { categories: state.categories, category: statsCat });
+  $view.innerHTML = statsHtml(state.books, statsRange, { categories: state.categories, category: statsCat, view: statsView });
+  $view.querySelectorAll('[data-sview]').forEach(b => b.addEventListener('click', () => { statsView = b.dataset.sview; renderStats(); }));
   $view.querySelectorAll('[data-range]').forEach(b => b.addEventListener('click', () => { statsRange = b.dataset.range; renderStats(); }));
   const cat = document.getElementById('stats-cat');
   if (cat) cat.addEventListener('change', () => { statsCat = cat.value; renderStats(); });
@@ -1080,7 +1131,7 @@ async function renderSettings() {
   const imported = state.books.filter(b => b.source === 'booklog').length;
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   $view.innerHTML = `
-    <section class="list-section"><h2 class="list-section__header">バックアップ</h2>
+    <details class="fold" open><summary>バックアップ</summary><div class="fold__body">
       <div class="card">
         <p class="small muted" style="margin:0">データはこのiPhoneの中だけにあります。定期的に書き出して「ファイル」アプリ(iCloud Drive)に保存してください。</p>
         <p class="small" style="margin:var(--space-2) 0 0">最後の書き出し: ${lastBackup ? fmtDate(lastBackup) : 'まだありません'}</p>
@@ -1088,44 +1139,44 @@ async function renderSettings() {
       <div class="actions"><button class="btn btn--prominent" id="export">書き出す</button><label class="btn btn--tinted">読み込む<input type="file" id="import" accept="application/json,.json" hidden></label></div>
       ${!standalone ? `<p class="list-section__footer">Safariの共有ボタンから「ホーム画面に追加」してから使ってください。追加しないと、しばらく開かないうちにデータが消えることがあります。</p>` : ''}
       <p class="list-section__footer">保存領域の保護: ${persisted ? '有効' : '未許可'}</p>
-    </section>
-    <section class="list-section"><h2 class="list-section__header">ブクログから取り込む</h2>
+    </div></details>
+    <details class="fold"><summary>ブクログから取り込む</summary><div class="fold__body">
       <div class="card"><p class="small muted" style="margin:0">ブクログの「データのエクスポート」で書き出したCSVを選びます。同じ本は二重に登録されません。${imported ? `取り込み済み: ${imported}冊` : ''}</p></div>
       <div class="actions"><label class="btn btn--tinted">CSVを選ぶ<input type="file" id="booklog" accept=".csv,text/csv" hidden></label></div>
-    </section>
-    <section class="list-section"><h2 class="list-section__header">AI(Gemini)</h2>
+    </div></details>
+    <details class="fold"><summary>AI(Gemini)</summary><div class="fold__body">
       <div class="card">
         <div class="row"><label for="g-key">APIキー</label><input id="g-key" type="password" autocomplete="off" value="${esc(key)}" placeholder="Google AI Studioで取得"></div>
         <div class="row"><label for="g-model">モデル</label><input id="g-model" value="${esc(model)}" placeholder="${gemini.DEFAULT_MODEL}"></div>
       </div>
       <p class="list-section__footer">無料枠では、送った内容がGoogleの製品改善に使われ、人が読むこともあります。AIに送るのは、メモの「問い返す」などを押したときだけです。キーはこの端末にだけ保存され、書き出しファイルにも含まれません。</p>
-    </section>
-    <section class="list-section"><h2 class="list-section__header">カテゴリ</h2>
+    </div></details>
+    <details class="fold"><summary>カテゴリ</summary><div class="fold__body">
       <div class="card"><textarea id="cat-list" class="field" rows="8" aria-label="カテゴリの一覧(1行に1つ)">${esc(state.categories.join('\n'))}</textarea></div>
       <p class="list-section__footer">1行に1つ。並び順がそのまま選択肢の順になります。名前を変えても、すでに付けた本のカテゴリは変わりません。</p>
       <div class="card" style="margin-top:var(--space-3)"><p class="small" style="margin:0">未分類 <b id="cat-left">${state.books.filter(b => !b.category).length}</b>冊</p><p class="small muted" id="cat-progress" style="margin:var(--space-1) 0 0"></p></div>
       <div class="actions"><button class="btn btn--tinted" id="cat-auto">未分類の本をまとめて分類</button></div>
       <p class="list-section__footer">国立国会図書館の分類(NDC)が分かる本はそれを使い、残りは書名と著者名だけをGeminiに送って分類します(100冊ずつ)。結果は本の詳細でいつでも直せます。</p>
-    </section>
-    <section class="list-section"><h2 class="list-section__header">図書館(カーリル)</h2>
+    </div></details>
+    <details class="fold"><summary>図書館(カーリル)</summary><div class="fold__body">
       <div class="card">
         <div class="row"><label for="c-key">アプリキー</label><input id="c-key" type="password" autocomplete="off" value="${esc(calil.appkey)}" placeholder="カーリルで無料登録"></div>
         <div class="row"><label for="c-name">図書館</label><input id="c-name" value="${esc(calil.name)}"></div>
         <div class="row"><label for="c-sys">システムID</label><input id="c-sys" value="${esc(calil.systemid)}"></div>
       </div>
       <p class="list-section__footer">「読みたい」の本が地元の図書館にあるか、貸出中かを確かめます。キーは calil.jp/api/dashboard/ で無料で取れます。吹田市立図書館のシステムIDは Osaka_Suita です。</p>
-    </section>
-    <section class="list-section"><h2 class="list-section__header">書影と本の情報</h2>
+    </div></details>
+    <details class="fold"><summary>書影と本の情報</summary><div class="fold__body">
       <div class="card">
         <div class="row"><label for="b-key">Google Books キー</label><input id="b-key" type="password" autocomplete="off" value="${esc(booksKey)}" placeholder="任意"></div>
       </div>
       <p class="list-section__footer">書影は国立国会図書館とAmazonの画像を使い、キーは要りません。Google Booksはキーなしだと世界中の利用者で上限を分け合うため、よく止まります。Google CloudでBooks APIを有効にしたキー(無料)を入れると、本の検索と著者の作品一覧が安定します。</p>
       <div class="actions"><button class="btn btn--tinted" id="diag">接続を確かめる</button></div>
       <div id="diag-out"></div>
-    </section>
-    <section class="list-section"><h2 class="list-section__header">このアプリについて</h2>
+    </div></details>
+    <details class="fold"><summary>このアプリについて</summary><div class="fold__body">
       <p class="list-section__footer">本 ${state.books.length}冊 ・ メモ ${state.notes.length}件。書誌の検索にGoogle Books APIと国立国会図書館サーチのAPIを利用しています。</p>
-    </section>`;
+    </div></details>`;
 
   document.getElementById('export').addEventListener('click', async () => {
     try { if (await exportData()) { toast('書き出しました'); renderSettings(); } } catch (e) { toast(e.message); }
