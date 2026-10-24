@@ -1293,6 +1293,8 @@ new IntersectionObserver(([e]) => nav.classList.toggle('is-collapsed', !e.isInte
 (async function start() {
   await load();
   db.requestPersist();
+  // Safariのタブはホーム画面のアプリと保存場所が別で、使わないと7日で消える
+  if (!(matchMedia('(display-mode: standalone)').matches || navigator.standalone)) document.getElementById('tab-warning').hidden = false;
   route();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();

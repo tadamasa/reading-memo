@@ -193,3 +193,9 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .want-title { font-size: 16px; }
 .want-author { font-size: 14px; color: var(--color-label-secondary); }
 .want-title:focus-visible, .want-author:focus-visible { outline: 2px solid var(--color-accent); border-radius: 4px; }
+
+.tab-warning {
+  margin: 8px 16px 0; padding: 10px 12px; border-radius: 12px;
+  background: color-mix(in srgb, #eb6834 14%, transparent);
+  font-size: 14px; line-height: 1.45;
+}
