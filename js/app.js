@@ -1,6 +1,7 @@
 import * as db from './db.js';
 import { parseBooklog } from './booklog.js';
 import { buildIndex } from './related.js';
+import { buildBookNotePrompt, splitSections, mdBlockToHtml } from './booknote.js';
 import { DEFAULT_CATEGORIES, ndcToCategory, parseCategories, buildClassifyPrompt, parseClassifyResult } from './categories.js';
 import { LENSES, buildDiscoverPrompt, parseDiscoverResult, amazonSearchUrl } from './discover.js';
 import { parseWantText, WANT_SOURCES } from './wantimport.js';
@@ -751,6 +752,10 @@ function renderBook(id) {
       <h2 class="list-section__header">概要</h2>
       <div id="summary"><p class="list-section__footer">${navigator.onLine ? '探しています…' : 'オフラインのため表示できません。'}</p></div>
     </section>
+    <section class="list-section" id="booknote-section">
+      <h2 class="list-section__header">読書ノート(AI)</h2>
+      <div id="booknote"></div>
+    </section>
     <div class="actions"><button class="btn btn--plain" id="b-ndl">国立国会図書館の件名を補う</button></div>
     </div>
 
@@ -783,6 +788,7 @@ function renderBook(id) {
   }));
   if (book.author) loadAuthor(book);
   loadSummary(book);
+  showBookNote(book);
   if (book.related) showDiscover(book);
   else document.getElementById('discover-go').addEventListener('click', () => discover(book));
   const update = async e => {
@@ -908,6 +914,44 @@ async function loadSummary(book) {
   if (r) { book.description = r.text; book.descriptionSource = r.source; invalidate(); }
   await db.put('books', book); // 並び順を変えないよう updatedAt は触らない
   if (bookById(book.id) && location.hash === `#book/${book.id}`) showSummary(book);
+}
+
+// ---------- 読書ノート(AI) ----------
+// ボタンを押したときだけ、GeminiにWeb検索させて「戦略的読書ノート」を作る。結果は本に保存する。
+function showBookNote(book, { busy = false, error = '' } = {}) {
+  const box = document.getElementById('booknote');
+  if (!box) return;
+  const n = book.bookNote;
+  if (busy) { box.innerHTML = `<p class="list-section__footer">GeminiがWebを調べて書いています。1分ほどかかることがあります…</p>`; return; }
+  const go = label => `<div class="actions" style="padding-top:var(--space-2)"><button class="btn ${n ? 'btn--plain' : 'btn--tinted'}" id="booknote-go">${label}</button></div>`;
+  if (!n) {
+    box.innerHTML = `${error ? `<p class="list-section__footer">${esc(error)}</p>` : ''}
+      <p class="list-section__footer">中心的な問い、主張と論理構造、主要概念、応用と批評、関連キーワードを、Web検索で調べてまとめます。書名と著者名、内容紹介をGeminiに送ります。</p>${go('読書ノートを作る')}`;
+  } else {
+    const sections = splitSections(n.text);
+    box.innerHTML = `<div class="booknote">${sections.map((sec, i) => `<details class="booknote__sec" ${i < 2 ? 'open' : ''}>
+        <summary>${sec.no ? `<span class="booknote__no">${esc(sec.no)}</span>` : ''}${esc(sec.title || '本文')}</summary>
+        <div class="booknote__body">${mdBlockToHtml(sec.lines)}</div></details>`).join('')}</div>
+      ${n.sources && n.sources.length ? `<details class="booknote__src"><summary>調べたページ ${n.sources.length}件</summary><ul>${n.sources.map(x => `<li><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a></li>`).join('')}</ul></details>` : ''}
+      <p class="list-section__footer">Geminiが${n.searched ? 'Web検索をもとに' : 'Web検索なしで'}書いたものです(${fmtDate(n.at)})。誤りが混じることがあります。${error ? ` ${esc(error)}` : ''}</p>${go('作り直す')}`;
+  }
+  document.getElementById('booknote-go').addEventListener('click', () => makeBookNote(book));
+}
+
+async function makeBookNote(book) {
+  const apiKey = await db.getMeta('geminiKey');
+  if (!apiKey) { showBookNote(book, { error: '設定でGeminiのAPIキーを入れると使えます。' }); return; }
+  showBookNote(book, { busy: true });
+  try {
+    const model = (await db.getMeta('geminiModel')) || gemini.DEFAULT_MODEL;
+    const r = await gemini.generateGrounded({ apiKey, model, prompt: buildBookNotePrompt(book) });
+    if (!r.text) throw new Error('空の答えが返りました');
+    book.bookNote = { text: r.text, sources: r.sources, searched: r.searched, at: new Date().toISOString() };
+    await db.put('books', book);
+    showBookNote(book);
+  } catch (e) {
+    showBookNote(book, { error: `作れませんでした(${e.message})` });
+  }
 }
 
 async function showLibrary(book, force = false) {

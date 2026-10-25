@@ -278,3 +278,21 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .why + .why { margin-top: var(--space-2); }
 .why__label { display: block; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--relate); }
 .why p { margin: 2px 0 0; font-size: 15px; line-height: 22px; }
+
+/* 読書ノート(AI) */
+.booknote { margin: 0 var(--space-4); border-radius: var(--r-list); background-color: var(--bg-grouped-secondary); overflow: hidden; }
+.booknote__sec + .booknote__sec { border-top: var(--hairline) solid var(--color-separator); }
+.booknote__sec > summary { list-style: none; display: flex; align-items: center; gap: var(--space-2); min-height: var(--hit); padding: var(--space-1) var(--space-4); font-weight: 600; font-size: 15px; line-height: 20px; cursor: pointer; }
+.booknote__sec > summary::-webkit-details-marker { display: none; }
+.booknote__sec > summary::after { content: "›"; margin-left: auto; color: var(--color-label-secondary); font-size: 20px; transition: transform .2s; }
+.booknote__sec[open] > summary::after { transform: rotate(90deg); }
+.booknote__no { flex: none; width: 22px; height: 22px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; background-color: color-mix(in srgb, var(--color-accent) 14%, transparent); color: var(--color-accent); }
+.booknote__body { padding: 0 var(--space-4) var(--space-3); font-size: 15px; line-height: 23px; }
+.booknote__body p { margin: 0 0 var(--space-2); }
+.booknote__body ul { margin: 0; padding-left: 1.2em; }
+.booknote__body ul ul { margin-top: var(--space-1); }
+.booknote__body li { margin-bottom: var(--space-1); }
+.booknote__src { margin: var(--space-2) var(--space-4) 0; font-size: 13px; line-height: 18px; color: var(--color-label-secondary); }
+.booknote__src summary { min-height: 32px; display: flex; align-items: center; cursor: pointer; color: var(--color-accent); }
+.booknote__src ul { margin: 0; padding-left: 1.2em; }
+.booknote__src a { color: var(--color-label-secondary); word-break: break-all; }

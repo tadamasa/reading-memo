@@ -137,3 +137,14 @@ test('カーリルの結果を一言にまとめる', () => {
   assert.equal(summarize({ status: 'OK', libkey: {} }).status, '蔵書なし');
   assert.equal(summarize({ status: 'Error' }).status, '確認できず');
 });
+
+import { splitSections, mdBlockToHtml, buildBookNotePrompt } from '../js/booknote.js';
+test('読書ノートを章に分けて安全なHTMLにする', () => {
+  const md = '前置き\n**0. 本書の概要**\n* 全体\n    * **第1章:** 甲\n    * **第2章:** 乙\n---\n## 1. 中心的な問い (Core Question)\n* 問い<script>\n';
+  const s = splitSections(md);
+  assert.deepEqual(s.map(x => x.no), ['', '0', '1']);
+  assert.equal(s[1].title, '本書の概要');
+  assert.equal(mdBlockToHtml(s[1].lines), '<ul><li>全体<ul><li><b>第1章:</b> 甲</li><li><b>第2章:</b> 乙</li></ul></li></ul>');
+  assert.ok(mdBlockToHtml(s[2].lines).includes('&lt;script&gt;'));
+  assert.ok(buildBookNotePrompt({ title: '動的平衡', author: '福岡伸一', year: '2009' }).includes('『動的平衡』(福岡伸一、2009年)'));
+});
