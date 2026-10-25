@@ -24,8 +24,12 @@ export function buildDiscoverPrompt({ book, notes = [], recentTitles = [], rareF
     '次の四つの観点で、それぞれ3冊ずつ、実在する本だけを挙げてください。存在が確かでない本は挙げないでください。日本語で読める本を優先します。',
     ...LENSES.map(([key, label, desc]) => `- ${key}(${label}): ${desc}`),
     '「遠いのに通じる」は、元の本と分野が離れているほど良い提案です。',
-    '出力は次の形のJSON配列だけにしてください。reason は、元の本のどこと何が通じるのかを40字以内で具体的に書きます。',
-    '[{"lens":"near|far|counter|unknown","title":"書名","author":"著者","year":"刊行年","reason":"理由"}]',
+    '一冊ごとに、なぜ選んだのかを読者が確かめられるように、次の三つを具体的に書いてください。分野名や「参考になる」のような一般的な言い方は避けます。',
+    '- link: 元の本のどの考え・問い・場面と、この本のどの考えがつながるのか(50字以内)。両方の具体的な概念名を入れる。',
+    '- gain: 元の本にはなく、この本を読むと新しく得られる見方・知識・経験(60字以内)。',
+    notes.length ? '- memo: 読者のメモのどれかと関係があれば、その関係(40字以内)。なければ空文字。' : '- memo: 空文字。',
+    '出力は次の形のJSON配列だけにしてください。',
+    '[{"lens":"near|far|counter|unknown","title":"書名","author":"著者","year":"刊行年","link":"つながり","gain":"得られるもの","memo":""}]',
   ].filter(Boolean).join('\n');
 }
 
@@ -39,7 +43,7 @@ export function parseDiscoverResult(text, shelf = []) {
   const seen = new Set();
   return arr.filter(x => x && x.title && lenses.has(x.lens)).map(x => {
     const mine = shelf.find(b => key(b.title) === key(x.title));
-    return { lens: x.lens, title: String(x.title).trim(), author: String(x.author || '').trim(), year: String(x.year || '').trim(), reason: String(x.reason || '').trim(), mineId: mine ? mine.id : null };
+    return { lens: x.lens, title: String(x.title).trim(), author: String(x.author || '').trim(), year: String(x.year || '').trim(), link: String(x.link || x.reason || '').trim(), gain: String(x.gain || '').trim(), memo: String(x.memo || '').trim(), mineId: mine ? mine.id : null };
   }).filter(x => { const k = key(x.title); if (seen.has(k)) return false; seen.add(k); return true; });
 }
 

@@ -979,8 +979,22 @@ async function discoverBySubject(book) {
     .sort((a, b) => (b.year || '').localeCompare(a.year || '')).slice(0, 12)
     .map(w => {
       const mine = state.books.find(b => norm(b.title) === norm(w.title));
-      return { lens: 'subject', title: w.title, author: w.author, year: w.year, isbn13: w.isbn13, reason: `件名「${subject}」`, mineId: mine ? mine.id : null };
+      return { lens: 'subject', title: w.title, author: w.author, year: w.year, isbn13: w.isbn13, link: `国立国会図書館の件名「${subject}」がこの本と共通`, mineId: mine ? mine.id : null };
     });
+}
+
+// 古い提案は reason だけを持っている
+const whyOf = x => x.link || x.reason || '';
+
+function discoverDetailHtml(x, book) {
+  const lens = LENSES.find(l => l[0] === x.lens);
+  const item = (label, text) => text ? `<div class="why"><span class="why__label">${label}</span><p>${esc(text)}</p></div>` : '';
+  return `<p class="discover-detail__title"><b>${esc(x.title)}</b> <span class="small muted">${esc([x.author, x.year].filter(Boolean).join(' ・ '))}</span></p>
+    ${item('選んだ観点', lens ? `${lens[1]}: ${lens[2]}` : x.lens === 'subject' ? '同じ件名の本' : '')}
+    ${item(`『${book.title.replace(/[(（].*$/, '').trim()}』とのつながり`, whyOf(x))}
+    ${item('この本で新しく得られるもの', x.gain)}
+    ${item('あなたのメモとの関係', x.memo)}
+    ${!x.gain && x.lens !== 'subject' ? '<p class="small muted" style="margin:var(--space-2) 0 0">前の形式の提案です。「探し直す」で、つながりと得られるものを詳しく出し直せます。</p>' : ''}`;
 }
 
 function showDiscover(book) {
@@ -993,7 +1007,8 @@ function showDiscover(book) {
     return `<li class="list__row discover-row">${lens ? `<b class="lens lens--${esc(x.lens)}">${esc(lens[1])}</b>` : ''}${coverHtml({ title: x.title, isbn13: x.isbn13 || null, id: '' })}
       <div class="list__text"><span class="list__title">${esc(x.title)}</span>
         <span class="list__subtitle">${esc([x.author, x.year].filter(Boolean).join(' ・ '))}</span>
-        ${x.reason ? `<span class="discover-why">${esc(x.reason)}</span>` : ''}
+        ${whyOf(x) ? `<span class="discover-why">${esc(whyOf(x))}</span>` : ''}
+        <button class="discover-more" data-dwhy="${i}" aria-expanded="false">選んだ理由</button>
         <span class="discover-actions">
           <a class="btn btn--small btn--plain" href="${esc(amazonSearchUrl(x))}" target="_blank" rel="noopener">Amazon</a>
           ${mine ? `<a class="btn btn--small btn--plain" href="#book/${esc(mine.id)}">${esc(STATUS_LABEL[mine.status])}</a>`
@@ -1006,15 +1021,28 @@ function showDiscover(book) {
   const sorted = items.map((x, i) => [x, i]).sort((a, b) => order.indexOf(a[0].lens) - order.indexOf(b[0].lens));
   box.innerHTML = (items.length ? `
       ${source === 'gemini' ? `<details class="discover-legend"><summary>4つの視点について</summary>${LENSES.filter(([k]) => items.some(x => x.lens === k)).map(([k, label, desc]) => `<p><b class="lens">${esc(label)}</b> ${esc(desc)}</p>`).join('')}</details>` : ''}
-      <ul class="list carousel">${sorted.map(([x, i]) => row(x, i)).join('')}</ul>`
+      <ul class="list carousel">${sorted.map(([x, i]) => row(x, i)).join('')}</ul>
+      <div class="discover-detail" id="discover-detail" hidden></div>`
     : `<p class="list-section__footer">関連する本は見つかりませんでした。</p>`) + `
     <p class="list-section__footer">${source === 'gemini' ? 'Geminiの提案です。実在しない本が混じることがあるので、Amazonで確かめてください。' : '国立国会図書館サーチの件名で探しました。'} ${fmtDate(at)}</p>
     <div class="actions" style="padding-top:0"><button class="btn btn--plain" id="discover-go">探し直す</button></div>`;
   document.getElementById('discover-go').addEventListener('click', () => discover(book));
+  // カードの「選んだ理由」で、列の下に理由の全文を出す(もう一度押すと閉じる)
+  const detail = document.getElementById('discover-detail');
+  box.querySelectorAll('[data-dwhy]').forEach(btn => btn.addEventListener('click', () => {
+    const open = btn.getAttribute('aria-expanded') === 'true';
+    box.querySelectorAll('[data-dwhy]').forEach(b => { b.setAttribute('aria-expanded', 'false'); b.closest('li').classList.remove('is-picked'); });
+    if (open) { detail.hidden = true; return; }
+    btn.setAttribute('aria-expanded', 'true');
+    btn.closest('li').classList.add('is-picked');
+    detail.innerHTML = discoverDetailHtml(items[Number(btn.dataset.dwhy)], book);
+    detail.hidden = false;
+    detail.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }));
   box.querySelectorAll('[data-dwant]').forEach(btn => btn.addEventListener('click', async () => {
     const x = items[Number(btn.dataset.dwant)];
     const nb = { id: db.uid(), isbn13: x.isbn13 || null, title: x.title, author: x.author, publisher: '', year: x.year, pages: null, description: '',
-      tags: [], subjects: [], ndc: null, cover: null, format: 'paper', status: 'want', createdAt: new Date().toISOString(), source: 'app', wantReason: `『${book.title.replace(/[(（].*$/, '').trim()}』から${x.reason ? `: ${x.reason}` : ''}` };
+      tags: [], subjects: [], ndc: null, cover: null, format: 'paper', status: 'want', createdAt: new Date().toISOString(), source: 'app', wantReason: `『${book.title.replace(/[(（].*$/, '').trim()}』から${whyOf(x) ? `: ${whyOf(x)}` : ''}` };
     await saveBook(nb);
     x.mineId = nb.id;
     await db.put('books', book);

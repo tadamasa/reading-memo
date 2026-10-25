@@ -270,3 +270,11 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .relate [data-reunion] > li { flex: 0 0 80%; box-sizing: border-box; scroll-snap-align: start; border-radius: var(--r-list); background-color: var(--relate-card); }
 .relate [data-reunion] > li::after { display: none; }
 .relate .btn--plain { color: var(--relate); }
+
+.discover-more { align-self: flex-start; margin-top: var(--space-1); font-size: 13px; line-height: 18px; color: var(--relate); text-decoration: underline; text-underline-offset: 2px; min-height: 32px; }
+.carousel > li.is-picked { outline: 2px solid var(--relate); outline-offset: -2px; }
+.discover-detail { margin: var(--space-2) var(--space-4) 0; padding: var(--space-3) var(--space-4); border-radius: var(--r-list); background-color: var(--relate-card); border-left: 3px solid var(--relate); scroll-margin: 120px 0 120px; }
+.discover-detail__title { margin: 0 0 var(--space-2); }
+.why + .why { margin-top: var(--space-2); }
+.why__label { display: block; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--relate); }
+.why p { margin: 2px 0 0; font-size: 15px; line-height: 22px; }
