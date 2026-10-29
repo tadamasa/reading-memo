@@ -1,7 +1,8 @@
 // バックアップ: 全データをJSONにして、iPhoneの共有シート(「ファイル」に保存→iCloud Drive等)へ渡す。
 import * as db from './db.js';
 
-const SECRET_KEYS = new Set(['geminiKey']);
+// キーと、端末ごとの同期の状態は書き出さない
+const SECRET_KEYS = new Set(['geminiKey', 'booksKey', 'calilKey', 'syncUrl', 'syncToken', 'syncCursor', 'syncDirty', 'syncLastAt']);
 
 export async function exportData() {
   const [books, notes, meta] = await Promise.all([db.getAll('books'), db.getAll('notes'), db.getAll('meta')]);

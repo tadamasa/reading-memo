@@ -148,3 +148,32 @@ test('読書ノートを章に分けて安全なHTMLにする', () => {
   assert.ok(mdBlockToHtml(s[2].lines).includes('&lt;script&gt;'));
   assert.ok(buildBookNotePrompt({ title: '動的平衡', author: '福岡伸一', year: '2009' }).includes('『動的平衡』(福岡伸一、2009年)'));
 });
+
+import { loadHub } from './gas-mock.mjs';
+test('読書ハブ: 新しい方を残し、差分だけ返し、ページを分ける', () => {
+  const hub = loadHub();
+  assert.equal(hub.post({ token: 'x' }).error, 'unauthorized');
+  const t = hub.token;
+  let r = hub.post({ token: t, since: 0, books: [{ id: 'b1', mtime: 10, data: { id: 'b1', title: '動的平衡', status: 'done' } }], notes: [{ id: 'n1', mtime: 11, data: { id: 'n1', bookId: 'b1', text: '流れ', createdAt: '2026-10-29T09:00:00' } }] });
+  assert.equal(r.books.length, 1); assert.equal(r.notes.length, 1); assert.equal(r.rev, 2);
+  // 表は他のApps Scriptから読める形
+  assert.equal(hub.sheets.get('notes').rows[1][6], '動的平衡');
+  assert.deepEqual(hub.readingNotesOn('2026-10-29').map(n => n.text), ['流れ']);
+  // 古い書き込みは無視される
+  r = hub.post({ token: t, since: 2, books: [{ id: 'b1', mtime: 5, data: { id: 'b1', title: '古い' } }] });
+  assert.equal(r.books.length, 0);
+  // 新しい書き込みは反映され、別の端末は差分だけ受け取る
+  hub.post({ token: t, since: 2, books: [{ id: 'b1', mtime: 20, data: { id: 'b1', title: '動的平衡2' } }] });
+  r = hub.post({ token: t, since: 2 });
+  assert.deepEqual(r.books.map(b => b.data.title), ['動的平衡2']);
+  // 削除
+  hub.post({ token: t, since: 0, notes: [{ id: 'n1', mtime: 30, deleted: true }] });
+  r = hub.post({ token: t, since: 3 });
+  assert.equal(r.notes[0].deleted, true);
+  // 1000行を超えても書け、400件ずつ返る
+  const many = Array.from({ length: 1100 }, (_, i) => ({ id: `m${i}`, mtime: 1, data: { id: `m${i}`, title: `本${i}` } }));
+  hub.post({ token: t, since: 0, books: many });
+  let since = 0, got = 0, pages = 0, more = true;
+  while (more) { r = hub.post({ token: t, since }); got += r.books.length + r.notes.length; since = r.rev; more = r.more; pages++; }
+  assert.equal(got, 1102); assert.equal(pages, 3);
+});

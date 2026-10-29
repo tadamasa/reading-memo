@@ -10,6 +10,7 @@ import { statsHtml, attachTooltips, scoreOf } from './stats.js';
 import { parseNdlItems, searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, bookSummary, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks } from './books.js';
 import * as gemini from './gemini.js';
 import { exportData, importData } from './backup.js';
+import * as sync from './sync.js';
 
 // ---------- 状態 ----------
 const state = {
@@ -1191,6 +1192,44 @@ function renderStats() {
 }
 
 // ---------- 設定 ----------
+let unwatchSync = null;
+function bindSyncSettings() {
+  const stateEl = document.getElementById('sync-state');
+  const sum = document.getElementById('sync-sum');
+  const show = st => {
+    if (!document.body.contains(stateEl)) return;
+    const text = st.state === 'off' ? '未接続'
+      : st.state === 'syncing' ? '同期しています…'
+      : st.state === 'error' ? `同期できませんでした: ${st.error}`
+      : `最後の同期: ${st.lastAt ? new Date(st.lastAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'まだ'}${st.pending ? ` ・ 未送信 ${st.pending}件` : ''}`;
+    stateEl.textContent = text;
+    sum.textContent = st.state === 'off' ? '' : st.state === 'error' ? 'エラー' : st.state === 'syncing' ? '同期中' : '接続中';
+  };
+  if (unwatchSync) unwatchSync();
+  unwatchSync = sync.onStatus(show);
+  show(sync.status);
+  const on = document.getElementById('s-on');
+  if (on) on.addEventListener('click', async () => {
+    const url = document.getElementById('s-url').value.trim();
+    const token = document.getElementById('s-token').value.trim();
+    if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url) || !token) { toast('URL(script.google.com)と合言葉を入れてください'); return; }
+    on.disabled = true;
+    await sync.connect(url, token);
+    if (sync.status.state === 'error') { toast(sync.status.error); on.disabled = false; return; }
+    toast('読書ハブにつなぎました');
+    await load();
+    renderSettings().then(() => { document.getElementById('sync-fold').open = true; });
+  });
+  const now = document.getElementById('s-now');
+  if (now) now.addEventListener('click', () => sync.syncNow());
+  const off = document.getElementById('s-off');
+  if (off) off.addEventListener('click', async () => {
+    if (!confirm('同期をやめますか。この端末のデータとスプレッドシートはどちらも残ります。')) return;
+    await sync.disconnect();
+    renderSettings().then(() => { document.getElementById('sync-fold').open = true; });
+  });
+}
+
 async function renderSettings() {
   setTab('settings');
   setTitle('設定');
@@ -1200,6 +1239,7 @@ async function renderSettings() {
     db.getMeta('booksKey', ''),
   ]);
   const calil = await libraryConfig();
+  const [syncUrl, syncToken] = await Promise.all([db.getMeta('syncUrl', ''), db.getMeta('syncToken', '')]);
   const imported = state.books.filter(b => b.source === 'booklog').length;
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   $view.innerHTML = `
@@ -1215,6 +1255,15 @@ async function renderSettings() {
     <details class="fold"><summary>ブクログから取り込む</summary><div class="fold__body">
       <div class="card"><p class="small muted" style="margin:0">ブクログの「データのエクスポート」で書き出したCSVを選びます。同じ本は二重に登録されません。${imported ? `取り込み済み: ${imported}冊` : ''}</p></div>
       <div class="actions"><label class="btn btn--tinted">CSVを選ぶ<input type="file" id="booklog" accept=".csv,text/csv" hidden></label></div>
+    </div></details>
+    <details class="fold" id="sync-fold"><summary>読書ハブ(同期)<small id="sync-sum"></small></summary><div class="fold__body">
+      <div class="card">
+        <div class="row"><label for="s-url">URL</label><input id="s-url" type="url" autocomplete="off" value="${esc(syncUrl)}" placeholder="https://script.google.com/macros/s/…/exec"></div>
+        <div class="row"><label for="s-token">合言葉</label><input id="s-token" type="password" autocomplete="off" value="${esc(syncToken)}" placeholder="setup の実行ログに出たもの"></div>
+      </div>
+      <p class="list-section__footer" id="sync-state"></p>
+      <div class="actions">${syncUrl ? `<button class="btn btn--tinted" id="s-now">今すぐ同期</button><button class="btn btn--plain" id="s-off">同期をやめる</button>` : `<button class="btn btn--prominent" id="s-on">接続して同期する</button>`}</div>
+      <p class="list-section__footer">自分のGoogleスプレッドシートに本とメモを置き、iPadなど他の端末や、日記アプリなど他のApps Scriptと共有します。準備の手順は<a href="https://github.com/tadamasa/reading-memo/blob/main/hub/README.md" target="_blank" rel="noopener">こちら</a>。この端末のデータは今まで通り端末内にあり、開いたときと書いた数秒後に差分だけをやり取りします。</p>
     </div></details>
     <details class="fold"><summary>AI(Gemini)</summary><div class="fold__body">
       <div class="card">
@@ -1250,6 +1299,7 @@ async function renderSettings() {
       <p class="list-section__footer">本 ${state.books.length}冊 ・ メモ ${state.notes.length}件。書誌の検索にGoogle Books APIと国立国会図書館サーチのAPIを利用しています。</p>
     </div></details>`;
 
+  bindSyncSettings();
   document.getElementById('export').addEventListener('click', async () => {
     try { if (await exportData()) { toast('書き出しました'); renderSettings(); } } catch (e) { toast(e.message); }
   });
@@ -1413,12 +1463,25 @@ sentinel.style.cssText = 'position:absolute;top:0;height:1px;width:1px;';
 document.body.prepend(sentinel);
 new IntersectionObserver(([e]) => nav.classList.toggle('is-collapsed', !e.isIntersecting), { threshold: 0 }).observe(sentinel);
 
+// 他の端末の変更を受け取ったら読み直す。入力中は画面を作り直さない(次に画面を移ったときに反映される)
+async function onRemoteChange() {
+  await load();
+  const a = document.activeElement;
+  const typing = a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+  const drafting = [...document.querySelectorAll('textarea')].some(t => t.value.trim());
+  if (!typing && !drafting && !location.hash.startsWith('#settings')) { const y = scrollY; await route(); scrollTo(0, y); }
+}
+
 (async function start() {
   await load();
   db.requestPersist();
   // Safariのタブはホーム画面のアプリと保存場所が別で、使わないと7日で消える
   if (!(matchMedia('(display-mode: standalone)').matches || navigator.standalone)) document.getElementById('tab-warning').hidden = false;
   route();
+  // 読書ハブとの同期: 開いたとき、アプリに戻ったときに差分をやり取りする
+  await sync.initSync({ onRemoteChange });
+  sync.schedule(300);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sync.schedule(300); });
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
 

@@ -55,25 +55,45 @@ export async function get(name, id) {
   return wrap((await store(name)).get(id));
 }
 
-export async function put(name, value) {
-  return wrap((await store(name, 'readwrite')).put(value));
+// 同期のために、本とメモの書き込みを知らせる。mtime は同期で新旧を比べる時刻(端末の時計、ミリ秒)。
+// 同期で受け取ったデータを書くときは { silent: true } にして、送り返さないようにする。
+const SYNCED = new Set(['books', 'notes']);
+let changeHook = null;
+export function onChange(fn) { changeHook = fn; }
+function touch(name, values, silent) {
+  if (silent || !SYNCED.has(name)) return;
+  const now = Date.now();
+  for (const v of values) v.mtime = now;
+}
+function notify(name, changes, silent) {
+  if (!silent && changeHook && SYNCED.has(name) && changes.length) changeHook(name, changes);
 }
 
-export async function del(name, id) {
-  return wrap((await store(name, 'readwrite')).delete(id));
+export async function put(name, value, { silent = false } = {}) {
+  touch(name, [value], silent);
+  const r = await wrap((await store(name, 'readwrite')).put(value));
+  notify(name, [{ id: value.id, mtime: value.mtime }], silent);
+  return r;
+}
+
+export async function del(name, id, { silent = false } = {}) {
+  const r = await wrap((await store(name, 'readwrite')).delete(id));
+  notify(name, [{ id, mtime: Date.now(), deleted: true }], silent);
+  return r;
 }
 
 export async function byIndex(name, index, value) {
   return wrap((await store(name)).index(index).getAll(value));
 }
 
-export async function putMany(name, values) {
+export async function putMany(name, values, { silent = false } = {}) {
+  touch(name, values, silent);
   const db = await open();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(name, 'readwrite');
     const s = tx.objectStore(name);
     for (const v of values) s.put(v);
-    tx.oncomplete = () => resolve(values.length);
+    tx.oncomplete = () => { notify(name, values.map(v => ({ id: v.id, mtime: v.mtime })), silent); resolve(values.length); };
     tx.onerror = () => reject(tx.error);
   });
 }
