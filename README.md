@@ -32,7 +32,7 @@
 
 ## 開発
 
-ビルド不要。ES Modulesのまま配信する。
+ビルド不要。ES Modulesのまま配信する。構成の考え方と落とし穴は [docs/home-app-architecture.md](docs/home-app-architecture.md) にまとめてあり、同じ方式で別のアプリを作るときの手引きにもなる。
 
 ```sh
 npm run serve   # http://localhost:8765
