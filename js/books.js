@@ -35,8 +35,22 @@ export async function searchBooks(query) {
   const q = isbn ? `isbn:${isbn}` : query;
   let data;
   try { data = await googleBooks(`q=${encodeURIComponent(q)}&maxResults=10&langRestrict=ja`); }
-  catch (e) { throw new Error(`書誌検索に失敗しました(${e.message})`); }
-  return (data.items || []).map(fromGoogle).filter(b => b.title);
+  catch (e) {
+    // ISBNなら国立国会図書館で引き直す(Google Booksはキーなしだとよく止まる)
+    if (isbn) { const hit = await ndlByIsbn(isbn); if (hit.length) return hit; }
+    throw new Error(`書誌検索に失敗しました(${e.message})`);
+  }
+  const found = (data.items || []).map(fromGoogle).filter(b => b.title);
+  if (!found.length && isbn) return ndlByIsbn(isbn);
+  return found;
+}
+
+async function ndlByIsbn(isbn) {
+  try {
+    const res = await fetch(`https://ndlsearch.ndl.go.jp/api/opensearch?isbn=${isbn}&cnt=3`);
+    if (!res.ok) return [];
+    return parseNdlItems(await res.text()).slice(0, 1).map(b => ({ ...b, isbn13: b.isbn13 || isbn }));
+  } catch { return []; }
 }
 
 // NDC分類と件名を補う。CORSなどで失敗したら null を返す。

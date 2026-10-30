@@ -177,3 +177,10 @@ test('読書ハブ: 新しい方を残し、差分だけ返し、ページを分
   while (more) { r = hub.post({ token: t, since }); got += r.books.length + r.notes.length; since = r.rev; more = r.more; pages++; }
   assert.equal(got, 1102); assert.equal(pages, 3);
 });
+
+import { isIsbnBarcode } from '../js/scanner.js';
+test('ISBNのバーコードだけを受け付ける', () => {
+  assert.equal(isIsbnBarcode('9784334037437'), true);
+  assert.equal(isIsbnBarcode('9784334037438'), false); // 検査数字違い
+  assert.equal(isIsbnBarcode('1920036008001'), false); // 2段目の価格コード
+});

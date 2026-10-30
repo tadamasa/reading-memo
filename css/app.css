@@ -296,3 +296,14 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .booknote__src summary { min-height: 32px; display: flex; align-items: center; cursor: pointer; color: var(--color-accent); }
 .booknote__src ul { margin: 0; padding-left: 1.2em; }
 .booknote__src a { color: var(--color-label-secondary); word-break: break-all; }
+
+/* バーコード読み取り */
+.scanner { position: fixed; inset: 0; z-index: 300; background: #000; color: #fff; display: flex; flex-direction: column; }
+.scanner__video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.scanner__frame { position: absolute; left: 5%; right: 5%; top: 50%; height: 22%; transform: translateY(-50%); border: 3px solid rgba(255,255,255,.9); border-radius: 14px; box-shadow: 0 0 0 100vmax rgba(0,0,0,.45); }
+.scanner__frame span { position: absolute; left: 6%; right: 6%; top: 50%; height: 2px; background: #ff3b30; animation: scanline 1.6s ease-in-out infinite alternate; }
+@keyframes scanline { from { transform: translateY(-28px); } to { transform: translateY(28px); } }
+.scanner__hint { position: absolute; left: var(--space-4); right: var(--space-4); top: calc(env(safe-area-inset-top) + 24px); margin: 0; text-align: center; font-size: 15px; line-height: 21px; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+.scanner__bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: var(--space-3); padding: var(--space-4) var(--space-4) calc(env(safe-area-inset-bottom) + var(--space-4)); }
+.scanner__bar .btn { flex: 1; }
+.scanner__photo { background-color: rgba(255,255,255,.18); color: #fff; }

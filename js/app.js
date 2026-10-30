@@ -11,6 +11,7 @@ import { parseNdlItems, searchBooks, ndlSubjects, normalizeIsbn, coverCandidates
 import * as gemini from './gemini.js';
 import { exportData, importData } from './backup.js';
 import * as sync from './sync.js';
+import { scanIsbn } from './scanner.js';
 
 // ---------- 状態 ----------
 const state = {
@@ -543,7 +544,8 @@ function renderAdd() {
   setTitle('本を追加', { back: true });
   $view.innerHTML = `
     <form id="add-form" class="search" role="search"><span aria-hidden="true">⌕</span><input id="add-q" type="search" placeholder="ISBN・書名・著者" aria-label="本を検索" enterkeyhint="search"></form>
-    <p class="list-section__footer">ISBNは本の裏表紙のバーコード下の数字(978から始まる13桁)です。</p>
+    <div class="actions" style="padding-top:var(--space-2);padding-bottom:0"><button class="btn btn--prominent" id="add-scan">バーコードを読み取る</button></div>
+    <p class="list-section__footer">裏表紙のバーコードをカメラで読むか、ISBN(978から始まる13桁)・書名・著者で検索します。</p>
     <div id="add-results"></div>
     <section class="list-section"><h2 class="list-section__header">読みたい本をまとめて追加</h2>
       <div class="card"><textarea id="w-text" class="field" rows="6" placeholder="図書館の予約一覧やAmazonのほしい物リストを全選択してコピーしたもの、AmazonのURL、ISBN、書名を1行ずつ…"></textarea></div>
@@ -583,6 +585,12 @@ function renderAdd() {
     } catch (err) {
       results.innerHTML = `<p class="pad muted">${esc(err.message)}。電波のある場所で試すか、下から手で登録してください。</p>`;
     }
+  });
+  document.getElementById('add-scan').addEventListener('click', async () => {
+    const isbn = await scanIsbn();
+    if (!isbn) return;
+    document.getElementById('add-q').value = isbn;
+    form.requestSubmit();
   });
   document.getElementById('m-add').addEventListener('click', () => {
     const title = document.getElementById('m-title').value.trim();
