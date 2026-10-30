@@ -105,7 +105,7 @@ iPhoneのホーム画面から開く自分専用のアプリを、費用0円で�
 `sw.js` の決まり:
 
 1. `SHELL` にアプリ本体のファイルを全部並べる。新しいJSファイルを足したら、ここにも足す。
-2. 変更を出すたびに `VERSION` を上げる。古いキャッシュは activate で消す。
+2. 変更を出すたびに `VERSION` を上げる。古いキャッシュは activate で消すが、消すのは自分の名前(`reading-memo-` で始まるもの)だけにする。同じ `<user>.github.io` の別アプリもキャッシュ置き場を共有しているので、名前を絞らないと別アプリのオフライン用キャッシュまで消してしまう。
 3. fetch は同一オリジンのGETだけを扱い、「ネット優先、失敗したらキャッシュ」。外部API(AI・書誌)はキャッシュしない。
 4. `skipWaiting()` と `clients.claim()` で、新しい版をすぐ効かせる。
 
@@ -123,8 +123,8 @@ iPhoneのホーム画面から開く自分専用のアプリを、費用0円で�
 - 公開設定: 「次のユーザーとして実行: 自分」「アクセスできるユーザー: 全員」。認証は `setup()` が作る合言葉(Script Properties の `TOKEN`)で、リクエスト本文に入れて送る。
 - 送る: `POST` で `Content-Type: text/plain;charset=utf-8`、本文はJSON。`{ token, since, books:[{id,mtime,deleted,data}], notes:[...] }`
 - 返す: `{ ok, rev, more, books:[...], notes:[...] }`。ハブは書き込みごとに連番 `rev` を振り、`since` より新しい行だけを返す(端末は最後の `rev` を `syncCursor` に持つ)。多いときは400件ずつ、`more` を立てて続きを取らせる。
-- 衝突は「`mtime` が新しい方を残す」(last-writer-wins)。削除は行を消さず `deleted=true` を残す(墓標)。同じ時刻同士は同じものとみなす。
-- 端末側は、開いたとき・アプリに戻ったとき(`visibilitychange`)・書いてから4秒後にまとめて送る。未送信の一覧は `meta.syncDirty` に保存して、途中で閉じても失わない。
+- 衝突は「`mtime` が新しい方を残す」(last-writer-wins)。削除は行を消さず `deleted=true` を残す(墓標)。同じミリ秒の書き込み同士の扱いは端末とハブで食い違う(ハブは後から届いた方で上書き、端末は同じものとみなして受け取らない)。自分一人が2台で同じミリ秒に直すことはまず起きないので放置しているが、複数人で使うなら端末idなどで順序を決める必要がある。
+- 端末側は、開いたとき・アプリに戻ったとき(`visibilitychange`)・書いてから4秒後にまとめて送る。未送信の一覧は書いてから0.3秒後に `meta.syncDirty` に保存し、次に開いたときに送る。ただし書いた直後の0.3秒以内にアプリが終わると一覧に載らず、データは端末に残っても自動では送られない(その本やメモを次に直したときに送られる)。
 - 受け取って画面を作り直すとき、入力中なら作り直さない。
 - シートは人と他のアプリが読む表として作る: 先頭に読みやすい列(書名・日付・本文など)、最後に `json` 列(アプリの元データ)。表を手で直してもアプリには戻らない(`json` が正)。
 - 他のApps Script(日記・縁泉)は `SpreadsheetApp.openById(ハブのID)` でシートを読むだけにする。HTTPでハブを呼ぶ必要はない。
@@ -178,8 +178,8 @@ iPhoneのホーム画面から開く自分専用のアプリを、費用0円で�
 
 ## 5. 新しいアプリを作るときの手順
 
-1. GitHubに公開リポジトリを作り、このリポジトリから次をコピーする: `index.html`(中身を差し替え)、`manifest.webmanifest`、`sw.js`、`css/hig-tokens.css`、`css/hig-components.css`、`js/db.js`、必要なら `js/backup.js`・`js/sync.js`・`js/gemini.js`・`js/scanner.js`、`package.json`、`tests/gas-mock.mjs`。
-2. 名前を変える: manifest の `name`/`short_name`、`apple-mobile-web-app-title`、`<title>`、`db.js` の `DB_NAME`、`sw.js` のキャッシュ名、`backup.js` の `app`。DB名とキャッシュ名が同じだと、同じドメイン(`<user>.github.io`)の別アプリとデータが混ざる。
+1. GitHubに公開リポジトリを作り、このリポジトリから次をコピーする: `index.html`(中身を差し替え)、`manifest.webmanifest`、`sw.js`、`css/hig-tokens.css`、`css/hig-components.css`、`js/db.js`、`package.json`。必要に応じて `js/backup.js`・`js/gemini.js`・`js/scanner.js`(と `vendor/zxing.min.js`)。同期をするなら `js/sync.js`・`hub/Code.gs`・`hub/README.md`・`tests/gas-mock.mjs`。
+2. 名前を変える: manifest の `name`/`short_name`、`apple-mobile-web-app-title`、`<title>`、`db.js` の `DB_NAME`、`sw.js` のキャッシュ名とactivateで消す名前の頭、`backup.js` の `app`。DB名とキャッシュ名が同じだと、同じドメイン(`<user>.github.io`)の別アプリとデータが混ざる。
 3. アイコンを作る(180 / 192 / 512px のPNG)。
 4. ストアを決め、同期するストアを `db.js` の `SYNCED` と `sync.js` に、受け口の列を `Code.gs` の `*_COLS` に書く。
 5. Settings → Pages で main / (root) を選んで公開。iPhoneのSafariで開き「ホーム画面に追加」。
