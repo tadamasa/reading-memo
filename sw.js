@@ -1,7 +1,8 @@
 // アプリ本体をキャッシュして、電波がなくても開けるようにする。
 // 書誌検索やAIなど外部APIはキャッシュしない。
-const VERSION = 'v17';
-const CACHE = `reading-memo-${VERSION}`;
+const VERSION = 'v18';
+const PREFIX = 'reading-memo-';
+const CACHE = `${PREFIX}${VERSION}`;
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest',
   'css/hig-tokens.css', 'css/hig-components.css', 'css/app.css',
@@ -13,8 +14,9 @@ self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });
 
+// 同じ github.io の別アプリのキャッシュは消さない
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith(PREFIX) && k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 
 // 同じオリジンのファイルは「ネット優先、だめならキャッシュ」。更新がすぐ反映され、圏外でも開ける。
