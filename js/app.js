@@ -165,8 +165,10 @@ function reunionHtml(r, kind) {
   const when = b.finishedAt || b.createdAt;
   const ago = yearsAgo(when);
   return `<li class="reunion" data-book="${esc(b.id)}">
+    <div class="reunion__head">${coverHtml(b)}<div>
     <div class="reunion__title">${esc(b.title)}</div>
     <div class="reunion__why">${esc([b.author, ago && `${ago}に${b.status === 'done' ? '読了' : '登録'}`, ...r.reasons].filter(Boolean).join(' ・ '))}</div>
+    </div></div>
     ${note ? `<p class="reunion__text">${esc(note.text)}</p>` : ''}
     <div class="reunion__reply" hidden>
       <textarea aria-label="${esc(b.title)}につなげるメモ" placeholder="今の本とつなげて一言"></textarea>
@@ -376,15 +378,21 @@ async function runAi(li, note, mode, label, rerender) {
 const COVER_V = 2; // 旧版で「なし」と判定した本も探し直す
 const COVER_RETRY_DAYS = 30;
 
+// 以前「書影なし」と判定した本を探し直す時期か
+const coverStale = b => b.cover === 'none' && (b.coverV !== COVER_V || Date.now() - Date.parse(b.coverCheckedAt || 0) > COVER_RETRY_DAYS * 864e5);
+
 function coverHtml(b, size = 'sm') {
   const initial = esc((b.title || '').replace(/^[「『(（\s]+/, '').slice(0, 1));
   const saved = b.cover && b.cover !== 'none' ? [b.cover] : [];
-  const stale = b.cover === 'none' && (b.coverV !== COVER_V || Date.now() - Date.parse(b.coverCheckedAt || 0) > COVER_RETRY_DAYS * 864e5);
+  const stale = coverStale(b);
   const cands = [...new Set([...saved, ...(b.thumbnail ? [b.thumbnail] : []),
     ...(b.cover === 'none' && !stale ? [] : coverCandidates(b))])];
   const ph = `<span class="cover__ph">${initial}</span>`;
-  if (!cands.length) return `<span class="cover cover--${size}" aria-hidden="true">${ph}</span>`;
-  return `<span class="cover cover--${size}" data-cover="${esc(b.id || '')}" data-cands="${esc(cands.slice(1).join(' '))}" aria-hidden="true">${ph}<img src="${esc(cands[0])}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`;
+  const who = `data-cover="${esc(b.id || '')}" data-title="${esc(b.title || '')}" data-author="${esc(b.author || '')}"`;
+  // 候補がないときは、ISBNを国立国会図書館で引いてから探す(lookupCover)
+  const canLookup = !(b.cover === 'none' && !stale) || (!b.isbn13 && !b.isbnLooked);
+  if (!cands.length) return `<span class="cover cover--${size}" ${who} ${canLookup ? 'data-lookup="1"' : ''} aria-hidden="true">${ph}</span>`;
+  return `<span class="cover cover--${size}" ${who} data-cands="${esc(cands.slice(1).join(' '))}" aria-hidden="true">${ph}<img src="${esc(cands[0])}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`;
 }
 
 function coverLoaded(img) {
@@ -412,8 +420,58 @@ function coverFailed(img) {
   img.remove();
   box.classList.remove('has-img');
   const b = bookById(box.dataset.cover);
-  if (b) queueGoogleCover(b);
+  // ISBNが分かっていて候補が全部だめなら Google Books へ。ISBNがなければ国立国会図書館で引く
+  if (b && b.isbn13 || box.dataset.looked) { if (b) queueGoogleCover(b); return; }
+  lookupCover(box);
 }
+
+// ISBNが分からない本(Kindleで登録した本、著者の古い作品など)は、書名と著者から国立国会図書館でISBNを引いて書影を探す。
+// 引いた結果は覚えておき、同じ本を何度も問い合わせない。本棚の本でも見つからなければ Google Books に回す。
+const lookupQueue = [];
+let lookupBusy = false;
+let isbnCache = null; // 'title|author' -> isbn13 または ''
+
+function lookupCover(box) {
+  if (box.dataset.looked) return;
+  box.dataset.looked = '1';
+  lookupQueue.push(box);
+  pumpLookup();
+}
+
+async function pumpLookup() {
+  if (lookupBusy) return;
+  lookupBusy = true;
+  if (!isbnCache) isbnCache = (await db.getMeta('isbnCache')) || {};
+  while (lookupQueue.length) {
+    const box = lookupQueue.shift();
+    if (!document.body.contains(box)) continue;
+    const b = bookById(box.dataset.cover);
+    const title = box.dataset.title, author = box.dataset.author;
+    const key = `${title}|${author}`;
+    let isbn = b && b.isbn13 ? b.isbn13 : isbnCache[key];
+    if (isbn === undefined && title && navigator.onLine) {
+      isbn = (await ndlFind(title, author)) || '';
+      isbnCache[key] = isbn;
+      db.setMeta('isbnCache', isbnCache);
+      await new Promise(r => setTimeout(r, 300));
+    }
+    // 同じ本が画面に二つあれば、先に見つけた書影をそのまま使う
+    const cands = [...new Set([...(b && b.cover && b.cover !== 'none' ? [b.cover] : []), ...(isbn ? coverCandidates({ isbn13: isbn }) : [])])];
+    if (cands.length) {
+      if (b && !b.isbn13) { b.isbn13 = isbn; db.put('books', b); }
+      box.dataset.cands = cands.slice(1).join(' ');
+      box.insertAdjacentHTML('beforeend', `<img src="${esc(cands[0])}" alt="" referrerpolicy="no-referrer">`);
+    } else if (b) {
+      if (!b.isbn13 && !b.isbnLooked) { b.isbnLooked = true; db.put('books', b); }
+      if (!(b.cover === 'none' && !coverStale(b))) queueGoogleCover(b);
+    }
+  }
+  lookupBusy = false;
+}
+
+// 画面に出た「候補なし」の書影を拾って探しにいく
+new MutationObserver(() => document.querySelectorAll('.cover[data-lookup]:not([data-looked])').forEach(lookupCover))
+  .observe(document.body, { childList: true, subtree: true });
 
 // <img> の load/error はバブリングしないので、捕捉フェーズでまとめて受ける
 document.addEventListener('load', e => { if (e.target.tagName === 'IMG' && e.target.parentElement?.classList.contains('cover')) coverLoaded(e.target); }, true);
