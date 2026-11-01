@@ -307,3 +307,13 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 .scanner__bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: var(--space-3); padding: var(--space-4) var(--space-4) calc(env(safe-area-inset-bottom) + var(--space-4)); }
 .scanner__bar .btn { flex: 1; }
 .scanner__photo { background-color: rgba(255,255,255,.18); color: #fff; }
+
+.ai-answer__head { display: block; margin-top: var(--space-3); font-size: 13px; line-height: 18px; color: var(--color-accent); }
+.ai-answer--deep .ai-answer__label + .ai-answer__head { margin-top: 0; }
+
+/* メモ一覧: 本ごと */
+.note-group { margin: var(--space-4) 0 0; }
+.note-group__head { display: flex; align-items: center; gap: var(--space-3); margin: 0 var(--space-4) var(--space-2); color: inherit; text-decoration: none; min-height: var(--hit); }
+.note-group__title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.note-group__title b { font-size: 16px; line-height: 21px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.note-group__go { color: var(--color-label-secondary); font-size: 22px; }

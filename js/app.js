@@ -351,14 +351,15 @@ async function runAi(li, note, mode, label, rerender) {
   slot.innerHTML = `<div class="ai-answer"><span class="ai-answer__label">AI(${esc(label)})</span>考えています…</div>`;
   try {
     const answer = await gemini.ask({ apiKey, model, mode, book, note, related: rel });
-    slot.innerHTML = `<div class="ai-answer"><span class="ai-answer__label">AI(${esc(label)})・AIの一般知識を含みます</span>${esc(answer)}</div>
+    const body = mode === 'deep' ? esc(answer).replace(/【([^】\n]{1,20})】\n?/g, '<b class="ai-answer__head">$1</b>') : esc(answer);
+    slot.innerHTML = `<div class="ai-answer${mode === 'deep' ? ' ai-answer--deep' : ''}"><span class="ai-answer__label">AI(${esc(label)})・AIの一般知識を含みます</span>${body}</div>
       <div class="reunion__reply"><textarea placeholder="答えてみる(自分の言葉で)" aria-label="AIへの答え"></textarea>
       <div class="note__tools"><button class="btn btn--small btn--prominent" data-act="answer">メモとして保存</button></div></div>`;
     slot.querySelector('[data-act="answer"]').addEventListener('click', async () => {
       const text = slot.querySelector('textarea').value.trim();
       if (!text) return;
       await saveNote({
-        id: db.uid(), bookId: note.bookId, text, quote: '', kind: mode === 'devil' ? 'objection' : 'question',
+        id: db.uid(), bookId: note.bookId, text, quote: '', kind: mode === 'devil' ? 'objection' : mode === 'deep' ? 'impression' : 'question',
         pos: null, linkedBookIds: [], replyTo: note.id, aiPrompt: answer, createdAt: new Date().toISOString(), source: 'app-ai',
       });
       toast('自分の答えを保存しました');
@@ -1036,6 +1037,37 @@ async function discoverBySubject(book) {
     });
 }
 
+// Geminiの提案にはISBNがないので書影が出ない。国立国会図書館で書名と著者からISBNを引いて補う(1冊1回だけ)
+async function resolveDiscoverCovers(book) {
+  const items = (book.related || {}).items || [];
+  let changed = false;
+  for (const [i, x] of items.entries()) {
+    if (x.isbn13 || x.isbnTried) continue;
+    if (!navigator.onLine || location.hash !== `#book/${book.id}`) break;
+    x.isbnTried = true;
+    changed = true;
+    const hit = await ndlFind(x.title, x.author);
+    if (!hit) continue;
+    x.isbn13 = hit;
+    const cover = document.querySelector(`#discover [data-di="${i}"] .cover`);
+    if (cover) cover.outerHTML = coverHtml({ title: x.title, isbn13: x.isbn13, id: '' });
+  }
+  if (changed) await db.put('books', book);
+}
+
+async function ndlFind(title, author) {
+  const q = `title=${encodeURIComponent(title)}${author ? `&creator=${encodeURIComponent(author.split(/[ ,、・／/]/)[0])}` : ''}`;
+  try {
+    const res = await fetch(`https://ndlsearch.ndl.go.jp/api/opensearch?${q}&mediatype=books&cnt=5`);
+    if (!res.ok) return null;
+    // 書名の頭が一致し、ISBNがあるもののうち、いちばん新しい版
+    const want = normTitle(title);
+    const hits = parseNdlItems(await res.text()).filter(h => h.isbn13 && (normTitle(h.title).startsWith(want) || want.startsWith(normTitle(h.title))));
+    hits.sort((a, b) => (b.year || '').localeCompare(a.year || ''));
+    return hits[0] ? hits[0].isbn13 : null;
+  } catch { return null; }
+}
+
 // 古い提案は reason だけを持っている
 const whyOf = x => x.link || x.reason || '';
 
@@ -1057,7 +1089,7 @@ function showDiscover(book) {
   const row = (x, i) => {
     const mine = x.mineId && bookById(x.mineId);
     const lens = lensOf(x.lens);
-    return `<li class="list__row discover-row">${lens ? `<b class="lens lens--${esc(x.lens)}">${esc(lens[1])}</b>` : ''}${coverHtml({ title: x.title, isbn13: x.isbn13 || null, id: '' })}
+    return `<li class="list__row discover-row" data-di="${i}">${lens ? `<b class="lens lens--${esc(x.lens)}">${esc(lens[1])}</b>` : ''}${coverHtml({ title: x.title, isbn13: x.isbn13 || null, id: '' })}
       <div class="list__text"><span class="list__title">${esc(x.title)}</span>
         <span class="list__subtitle">${esc([x.author, x.year].filter(Boolean).join(' ・ '))}</span>
         ${whyOf(x) ? `<span class="discover-why">${esc(whyOf(x))}</span>` : ''}
@@ -1080,6 +1112,7 @@ function showDiscover(book) {
     <p class="list-section__footer">${source === 'gemini' ? 'Geminiの提案です。実在しない本が混じることがあるので、Amazonで確かめてください。' : '国立国会図書館サーチの件名で探しました。'} ${fmtDate(at)}</p>
     <div class="actions" style="padding-top:0"><button class="btn btn--plain" id="discover-go">探し直す</button></div>`;
   document.getElementById('discover-go').addEventListener('click', () => discover(book));
+  resolveDiscoverCovers(book);
   // カードの「選んだ理由」で、列の下に理由の全文を出す(もう一度押すと閉じる)
   const detail = document.getElementById('discover-detail');
   box.querySelectorAll('[data-dwhy]').forEach(btn => btn.addEventListener('click', () => {
@@ -1160,24 +1193,44 @@ async function loadAuthor(book) {
 
 // ---------- メモ一覧 ----------
 let notesQuery = '';
+// メモ一覧は本ごとにまとめる(新しく書いた本が上)。「新しい順」に切り替えると日付順の一覧になる。
 // 一度に全部出すと長くなるので、少しずつ出す
-const NOTES_PAGE = 20;
+const NOTES_PAGE = 20; // 新しい順のとき: メモの件数 / 本ごとのとき: 本の冊数(10冊)
 let notesShown = NOTES_PAGE;
+let notesView = 'book';
 function renderNotes() {
   setTab('notes');
   setTitle('メモ');
   const q = notesQuery.normalize('NFKC').toLowerCase();
   const list = state.notes
-    .filter(n => !q || `${n.text} ${n.quote}`.normalize('NFKC').toLowerCase().includes(q))
+    .filter(n => !q || `${n.text} ${n.quote} ${(bookById(n.bookId) || {}).title || ''}`.normalize('NFKC').toLowerCase().includes(q))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  $view.innerHTML = `
-    <label class="search"><span aria-hidden="true">⌕</span><input id="notes-q" type="search" placeholder="メモを検索" value="${esc(notesQuery)}" aria-label="メモを検索"></label>
-    <section class="list-section">
-      ${list.length ? `<ul class="list list--inset">${list.slice(0, notesShown).map(n => noteHtml(n, { showBook: true })).join('')}</ul>` : `<div class="empty"><p class="empty__message">メモはまだありません。</p></div>`}
-      ${list.length > notesShown ? `<div class="actions"><button class="btn btn--tinted" id="notes-more">さらに${Math.min(NOTES_PAGE, list.length - notesShown)}件を表示(残り${list.length - notesShown}件)</button></div>` : ''}
+  const groups = [];
+  const byBook = new Map();
+  for (const n of list) {
+    if (!byBook.has(n.bookId)) { const g = { book: bookById(n.bookId), notes: [] }; byBook.set(n.bookId, g); groups.push(g); }
+    byBook.get(n.bookId).notes.push(n);
+  }
+  const perPage = notesView === 'book' ? Math.round(NOTES_PAGE / 2) : NOTES_PAGE;
+  const total = notesView === 'book' ? groups.length : list.length;
+  const shown = Math.min(total, Math.round(notesShown * perPage / NOTES_PAGE));
+  const groupHtml = g => `<section class="note-group">
+      ${g.book ? `<a class="note-group__head" href="#book/${esc(g.book.id)}">${coverHtml(g.book)}<span class="note-group__title"><b>${esc(g.book.title)}</b><span class="small muted">${esc([g.book.author, `メモ ${g.notes.length}件`].filter(Boolean).join(' ・ '))}</span></span><span class="note-group__go" aria-hidden="true">›</span></a>`
+        : `<p class="note-group__head muted">本が見つからないメモ ${g.notes.length}件</p>`}
+      <ul class="list list--inset">${g.notes.map(n => noteHtml(n)).join('')}</ul>
     </section>`;
+  $view.innerHTML = `
+    <label class="search"><span aria-hidden="true">⌕</span><input id="notes-q" type="search" placeholder="メモや書名で検索" value="${esc(notesQuery)}" aria-label="メモを検索"></label>
+    <div class="segmented-wrap"><div class="segmented segmented--wide" role="tablist">
+      ${[['book', '本ごと'], ['date', '新しい順']].map(([k, l]) => `<button class="segmented__item ${k === notesView ? 'is-active' : ''}" role="tab" aria-selected="${k === notesView}" data-nview="${k}">${l}</button>`).join('')}
+    </div></div>
+    ${!list.length ? `<div class="empty"><p class="empty__message">メモはまだありません。</p></div>`
+      : notesView === 'book' ? `<p class="list-section__footer" style="margin-top:0">${groups.length}冊・${list.length}件</p>${groups.slice(0, shown).map(groupHtml).join('')}`
+      : `<section class="list-section" style="margin-top:0"><ul class="list list--inset">${list.slice(0, shown).map(n => noteHtml(n, { showBook: true })).join('')}</ul></section>`}
+    ${total > shown ? `<div class="actions"><button class="btn btn--tinted" id="notes-more">さらに表示(残り${total - shown}${notesView === 'book' ? '冊' : '件'})</button></div>` : ''}`;
   const more = document.getElementById('notes-more');
   if (more) more.addEventListener('click', () => { const y = scrollY; notesShown += NOTES_PAGE; renderNotes(); scrollTo(0, y); });
+  $view.querySelectorAll('[data-nview]').forEach(btn => btn.addEventListener('click', () => { notesView = btn.dataset.nview; notesShown = NOTES_PAGE; renderNotes(); }));
   const input = document.getElementById('notes-q');
   input.addEventListener('change', () => { notesQuery = input.value; notesShown = NOTES_PAGE; renderNotes(); });
   bindNoteTools($view, renderNotes);

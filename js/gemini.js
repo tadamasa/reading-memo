@@ -20,15 +20,31 @@ const MODES = {
     system: 'あなたは分野横断の連想を助ける相手です。読者のメモと構造が似ている、まったく別の分野の概念や現象を1つ挙げ、' +
       'どこが似ていてどこが違うかを日本語で3文以内で説明してください。確信がない事実は「不確か」と明記します。',
   },
+  deep: {
+    label: '掘り下げる',
+    system: 'あなたは読書の思考パートナーです。読者のメモを起点に、深く考察してください。' +
+      '次の五つの見出しで、日本語で書きます。見出しは【】で囲んで行頭に置き、それぞれ2〜4文にします。\n' +
+      '【このメモの核心】メモが本当に言おうとしていることと、その暗黙の前提\n' +
+      '【本の文脈】本の主張や主要な概念の中で、このメモがどこに位置するか\n' +
+      '【別の分野から】構造が似ている別分野の概念や現象を一つ挙げ、似ている点と違う点\n' +
+      '【限界と反例】この考えが成り立たなくなる条件や、反対側からの見方\n' +
+      '【次の問い】読者が自分で考え続けるための、短く鋭い問いを二つ\n' +
+      '確信のない事実は「不確か」と明記します。称賛や前置きは不要です。',
+  },
 };
 
 export function modes() {
   return Object.entries(MODES).map(([key, m]) => ({ key, label: m.label }));
 }
 
-export function buildPrompt({ book, note, related = [] }) {
+export function buildPrompt({ book, note, related = [], mode }) {
   const lines = [];
   lines.push(`本: 『${book.title}』${book.author ? ` ${book.author}` : ''}`);
+  // 掘り下げるときは、本の内容(概要と読書ノート)も渡して文脈に位置づけられるようにする
+  if (mode === 'deep') {
+    if (book.description) lines.push(`本の概要: ${book.description.slice(0, 500)}`);
+    if (book.bookNote && book.bookNote.text) lines.push(`本の読書ノート(抜粋): ${book.bookNote.text.slice(0, 1500)}`);
+  }
   if (note.quote) lines.push(`引用: 「${note.quote}」`);
   lines.push(`読者のメモ: ${note.text}`);
   if (related.length) {
@@ -47,7 +63,7 @@ export async function ask({ apiKey, model = DEFAULT_MODEL, mode = 'socratic', bo
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: m.system }] },
-      contents: [{ role: 'user', parts: [{ text: buildPrompt({ book, note, related }) }] }],
+      contents: [{ role: 'user', parts: [{ text: buildPrompt({ book, note, related, mode }) }] }],
     }),
   });
   const data = await res.json().catch(() => ({}));
