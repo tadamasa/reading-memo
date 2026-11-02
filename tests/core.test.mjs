@@ -130,6 +130,35 @@ https://amzn.asia/d/abc123`);
   assert.equal(r[4].short, true); // URLだけの短縮リンクは直前の書名に付く
 });
 
+test('読みたいの貼り付け: 縁泉などから来るISBN・ASIN・書名の一覧と、表計算ソフトのタブ区切り', () => {
+  const r = parseWantText(['9784480064929', '4062748681 銀河英雄伝説', 'B00ABCDEFG', '利己的な遺伝子',
+    '9784152098703\t三体\t劉慈欣', '\tB0BQ7F7Q5Z\t知の編集術 / 松岡正剛\t\t2024/01/02'].join('\n'));
+  assert.equal(r.length, 6);
+  assert.deepEqual([r[0].isbn, r[0].title], ['9784480064929', '']);
+  assert.deepEqual([r[1].isbn, r[1].title], ['4062748681', '銀河英雄伝説']); // ISBN-10を書名に残さない
+  assert.deepEqual([r[2].asin, r[2].title], ['B00ABCDEFG', '']);
+  assert.equal(r[3].title, '利己的な遺伝子');
+  assert.deepEqual([r[4].isbn, r[4].title, r[4].author], ['9784152098703', '三体', '劉慈欣']);
+  assert.deepEqual([r[5].asin, r[5].title, r[5].author], ['B0BQ7F7Q5Z', '知の編集術', '松岡正剛']);
+  // 見出し行は飛ばし、ハイフン付きのISBN-10も読む
+  const h = parseWantText('ISBN\t書名\t著者\n4-06-274868-1\t銀河英雄伝説\t田中芳樹');
+  assert.equal(h.length, 1);
+  assert.deepEqual([h[0].isbn, h[0].title, h[0].author], ['4062748681', '銀河英雄伝説', '田中芳樹']);
+});
+
+test('読みたいの貼り付け: 縁泉ホームのCSV(itemId, isbn13, title, status)', () => {
+  const r = parseWantText(`\ufeffitemId,isbn13,title,status
+4062748681,9784062748681,"銀河英雄伝説 1, 黎明篇",open
+B000JABQI6,,造形と科学の新しい風景,open
+B000PTYQZ6,4959241712345,デジャヴ,open
+4334037437,9784334037437,動的平衡,試した
+`);
+  assert.equal(r.length, 3); // JANコードの映像ソフトは除く
+  assert.deepEqual([r[0].asin, r[0].isbn, r[0].title], ['4062748681', '9784062748681', '銀河英雄伝説 1, 黎明篇']);
+  assert.deepEqual([r[1].asin, r[1].isbn, r[1].title], ['B000JABQI6', null, '造形と科学の新しい風景']);
+  assert.equal(r[2].title, '動的平衡');
+});
+
 import { summarize } from '../js/calil.js';
 test('カーリルの結果を一言にまとめる', () => {
   assert.equal(summarize({ status: 'OK', libkey: { 中央: '貸出中', 千里山: '貸出可' } }).status, '貸出可');
