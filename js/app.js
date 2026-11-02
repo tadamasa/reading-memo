@@ -662,8 +662,12 @@ function renderAdd() {
 // ---------- 読みたいの一本化 ----------
 const normTitle = s => (s || '').normalize('NFKC').replace(/[\s(（:：「」『』].*$/, '').toLowerCase();
 
+// 照合はブクログのアイテムIDの完全一致 → ISBN13 → 書名の順(副題の違いはIDで吸収する)
 function findOnShelf(c) {
-  return state.books.find(b => (c.isbn13 && b.isbn13 === c.isbn13) || (c.asin && b.itemId === c.asin) || (c.title && normTitle(b.title) === normTitle(c.title)));
+  const isbn13 = c.isbn13 || (c.isbn && c.isbn.length === 13 ? c.isbn : null);
+  return (c.asin && state.books.find(b => b.itemId && b.itemId.toUpperCase() === c.asin.toUpperCase()))
+    || (isbn13 && state.books.find(b => b.isbn13 === isbn13))
+    || (c.title && state.books.find(b => normTitle(b.title) === normTitle(c.title)));
 }
 
 // 書名だけ・ISBNだけの行を、国会図書館サーチ(だめならGoogle Books)で補う

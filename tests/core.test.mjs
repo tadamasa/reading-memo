@@ -146,6 +146,19 @@ test('読みたいの貼り付け: 縁泉などから来るISBN・ASIN・書名�
   assert.deepEqual([h[0].isbn, h[0].title, h[0].author], ['4062748681', '銀河英雄伝説', '田中芳樹']);
 });
 
+test('読みたいの貼り付け: 縁泉ホームのCSV(itemId, isbn13, title, status)', () => {
+  const r = parseWantText(`\ufeffitemId,isbn13,title,status
+4062748681,9784062748681,"銀河英雄伝説 1, 黎明篇",open
+B000JABQI6,,造形と科学の新しい風景,open
+B000PTYQZ6,4959241712345,デジャヴ,open
+4334037437,9784334037437,動的平衡,試した
+`);
+  assert.equal(r.length, 3); // JANコードの映像ソフトは除く
+  assert.deepEqual([r[0].asin, r[0].isbn, r[0].title], ['4062748681', '9784062748681', '銀河英雄伝説 1, 黎明篇']);
+  assert.deepEqual([r[1].asin, r[1].isbn, r[1].title], ['B000JABQI6', null, '造形と科学の新しい風景']);
+  assert.equal(r[2].title, '動的平衡');
+});
+
 import { summarize } from '../js/calil.js';
 test('カーリルの結果を一言にまとめる', () => {
   assert.equal(summarize({ status: 'OK', libkey: { 中央: '貸出中', 千里山: '貸出可' } }).status, '貸出可');

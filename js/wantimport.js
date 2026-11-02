@@ -2,6 +2,8 @@
 // 図書館の予約一覧やAmazonのほしい物リストの画面を「全選択→コピー」した文字や、
 // AmazonのURL・ISBNを並べたメモを、そのまま貼れるようにする。
 
+import { parseCsv } from './booklog.js';
+
 const AMAZON = /amazon\.co\.jp\/(?:[^\s]*?\/)?(?:dp|gp\/product|o\/ASIN|gp\/aw\/d)\/([A-Z0-9]{10})/i;
 const SHORT = /(?:amzn\.asia|amzn\.to|a\.co)\/[^\s]+/i;
 const ISBN13 = /97[89][-\s]?(?:\d[-\s]?){9}\d/;
@@ -53,7 +55,29 @@ function fromCells(raw) {
   return c;
 }
 
+// 縁泉ホームが書き出す「読みたい」一覧(UTF-8、見出し付きCSV: itemId, isbn13, title, status)。
+// itemId はブクログのアイテムID(ほとんどISBN-10、一部ASIN)。本棚の itemId と完全一致で照合できるよう asin に入れる。
+// isbn13 が 978/979 で始まらない行(JANコードの映像ソフトなど)は本ではないので取り込まない。
+const CSV_HEAD = /^\ufeff?\s*"?(?:itemId|isbn13|title)"?\s*,/i;
+function fromIdCsv(text) {
+  const rows = parseCsv(text.replace(/^\ufeff/, '').trim() + '\n').filter(r => r.some(c => c.trim()));
+  const head = rows.shift().map(h => h.trim().toLowerCase());
+  const col = name => head.indexOf(name.toLowerCase());
+  const [iItem, iIsbn, iTitle, iAuthor] = [col('itemId'), col('isbn13'), col('title'), col('author')];
+  const out = [];
+  for (const r of rows) {
+    const get = i => (i >= 0 ? String(r[i] || '').trim() : '');
+    const itemId = get(iItem).toUpperCase();
+    const code = get(iIsbn).replace(/[-\s]/g, '');
+    if (code && !/^97[89]\d{10}$/.test(code)) continue; // 本以外
+    const c = { title: get(iTitle), author: get(iAuthor), asin: itemId || null, isbn: code || null, short: false, raw: r.join(',') };
+    if (c.title || c.asin || c.isbn) out.push(c);
+  }
+  return out;
+}
+
 export function parseWantText(text) {
+  if (CSV_HEAD.test(String(text || '').trimStart())) return fromIdCsv(String(text));
   const out = [];
   let last = null;
   for (const raw of String(text || '').split(/\r?\n/)) {
