@@ -6,6 +6,8 @@ const AMAZON = /amazon\.co\.jp\/(?:[^\s]*?\/)?(?:dp|gp\/product|o\/ASIN|gp\/aw\/
 const SHORT = /(?:amzn\.asia|amzn\.to|a\.co)\/[^\s]+/i;
 const ISBN13 = /97[89][-\s]?(?:\d[-\s]?){9}\d/;
 const ISBN10 = /(?<![\dA-Z])\d{9}[\dX](?![\dA-Z])/;
+// ブクログや縁泉の一覧に残る、URLなしのKindle本のASIN(B0から始まる10文字)
+const ASIN = /(?<![\dA-Z])B0[0-9A-Z]{8}(?![\dA-Z])/;
 
 // 書名ではない行(価格、日付、状態、ボタンの文字など)
 const NOISE = /^(?:[￥¥$]\s?[\d,]+|[\d,]+円|.*(?:予約日|受取期限|取置|予約順位|順位|貸出中|在庫|ポイント|カートに入れる|購入済|追加日|優先度|コメント|数量|中古品|新品|出品|配送|お届け|件中|ページ|ログイン|ログアウト|メニュー|検索結果|並び替え).*|\d+|[\d/:年月日\s.-]+|[★☆]+.*|(?:Kindle版|単行本|文庫|新書|ペーパーバック|オーディオブック)(?:\s*[(（].*[)）])?)$/;
@@ -29,18 +31,42 @@ function splitAuthor(s) {
   return m ? { title: m[1].trim(), author: m[2].replace(/\s*(?:著|編|訳)$/, '').trim() } : { title: s, author: '' };
 }
 
+// 表計算ソフトから貼った行(タブ区切り): ISBN・ASIN・書名・著者の列を見分ける
+function fromCells(raw) {
+  const cells = raw.split('\t').map(c => c.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const c = { title: '', author: '', asin: null, isbn: null, short: false, raw: cells.join(' ') };
+  const texts = [];
+  for (const cell of cells) {
+    const plain = cell.replace(/^ISBN[:：]?\s*/i, '');
+    if (!c.isbn && ISBN13.test(plain) && plain.replace(/[-\s]/g, '').length === 13) c.isbn = plain.replace(/[-\s]/g, '');
+    else if (!c.isbn && /^\d{9}[\dX]$/.test(plain)) c.isbn = plain;
+    else if (!c.asin && /^B0[0-9A-Z]{8}$/.test(cell)) c.asin = cell;
+    else if (!c.asin && AMAZON.test(cell)) c.asin = cell.match(AMAZON)[1].toUpperCase();
+    else if (!/^[\d\s./:-]+$/.test(cell) && !NOISE.test(cell)) texts.push(cell);
+  }
+  if (texts[0]) Object.assign(c, splitAuthor(texts[0]));
+  if (texts[1] && !c.author) c.author = texts[1];
+  return c;
+}
+
 export function parseWantText(text) {
   const out = [];
   let last = null;
   for (const raw of String(text || '').split(/\r?\n/)) {
+    if (raw.includes('\t') && raw.split('\t').some(c => c.trim())) {
+      last = fromCells(raw);
+      out.push(last);
+      continue;
+    }
     const line = raw.replace(/\s+/g, ' ').trim();
     if (!line) continue;
     const am = line.match(AMAZON);
     const isbn = (line.match(ISBN13) || [])[0];
     const isbn10 = !am && !isbn ? (line.match(ISBN10) || [])[0] : null;
-    if (am || isbn || isbn10 || SHORT.test(line)) {
-      const id = { asin: am ? am[1].toUpperCase() : null, isbn: isbn ? isbn.replace(/[-\s]/g, '') : isbn10, short: !am && SHORT.test(line) };
-      const text = cleanTitle(line.replace(/https?:\/\/\S+/g, '').replace(ISBN13, '').replace(/ISBN[:：]?/i, '').trim());
+    const asin = !am ? (line.match(ASIN) || [])[0] : null;
+    if (am || isbn || isbn10 || asin || SHORT.test(line)) {
+      const id = { asin: am ? am[1].toUpperCase() : asin || null, isbn: isbn ? isbn.replace(/[-\s]/g, '') : isbn10, short: !am && SHORT.test(line) };
+      const text = cleanTitle(line.replace(/https?:\/\/\S+/g, '').replace(ISBN13, '').replace(isbn10 || asin || /$^/, '').replace(/ISBN[:：]?/i, '').trim());
       // URLだけの行は、直前の書名の行に付ける
       if (!text && last && !last.asin && !last.isbn) { Object.assign(last, id); continue; }
       last = { ...(amazonTitle(text) || splitAuthor(text)), ...id, raw: line };

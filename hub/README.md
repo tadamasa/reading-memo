@@ -53,3 +53,53 @@ function readingNotesOn(date) { // date: '2026-10-29'
 ```
 
 スプレッドシートIDは、スプレッドシートのURLの `/d/` と `/edit` の間の文字列です。
+
+## ほかのアプリが読んでいる列(変えるときは相手側も直す)
+
+2026-11 から、次の2つが読書ハブを読んでいます。どちらも読むだけで、書き込みはしません。
+
+| 読んでいる相手 | いつ | 読むもの |
+|---|---|---|
+| 縁泉GAS(縁泉_改) | 毎晩 | `books` から読了本を拾い、縁泉の「作品」として追記する |
+| 日記と縁泉の共通ライブラリ(「その日」の読み取り) | 開いたとき | `books` と `notes` から、その日に読み終えた本と書いたメモを出す |
+
+### 約束になっている列
+
+`books`(この並び): `id, rev, mtime, deleted, title, author, status, category, score, finishedAt, json`
+
+| 列 | 中身 | 読んでいる相手 |
+|---|---|---|
+| `status` | `読みたい` / `読書中` / `読了` / `中断` の日本語 | 縁泉GAS(`読了` の行だけ拾う) |
+| `finishedAt` | 読了日 `yyyy-mm-dd`。読了でない本や、ブクログで日付がなかった本は空 | 縁泉GAS、共通ライブラリ |
+| `deleted` | 文字の `true` / `false`。`true` の行は飛ばす | 縁泉GAS、共通ライブラリ |
+| `title`, `author`, `category` | 書名、著者、分類 | 共通ライブラリ |
+| `json` の `isbn13` | 13桁のISBN。Kindle本などは `null` | 縁泉GAS(作品の重複を見分ける) |
+| `json` の `itemId` | ブクログの商品ID(ISBN-10 か Kindle の ASIN)。アプリで追加した本は `null` のことがある | 縁泉GAS(`isbn13` がないときの見分け) |
+| `json` の `cover` | 書影のURL。まだ探していなければ `null`、見つからなかった本は文字の `none` | 共通ライブラリ(`none` は画像なしとして扱う) |
+
+`notes`(この並び): `id, rev, mtime, deleted, date, bookId, bookTitle, kind, text, quote, json`
+
+| 列 | 中身 | 読んでいる相手 |
+|---|---|---|
+| `bookId` | `books` の `id` | 共通ライブラリ |
+| `text` | メモの本文 | 共通ライブラリ |
+| `date`, `deleted` | 書いた日 `yyyy-mm-dd`、削除済みかどうか | 共通ライブラリ(その日のメモを選ぶ) |
+
+読むときに気をつけること:
+
+- **列は見出しの名前で探してください**(上の `readingNotesOn` の例のように `head.indexOf('text')`)。列の番号で読むと、列が増えたときに壊れます。
+- 表の `status` は日本語ですが、`json` の中の `status` はアプリの内部の値(`want` / `reading` / `done` / `stopped`)です。読了を見分けるときは表の `status` 列を使います。
+- 削除済みの行は `json` が空です。`deleted` を先に見てください。
+- 表はすべて書式なしテキストなので、日付は `Date` ではなく文字列で返ります。
+
+### 読書メモ側で変えるときの決まり
+
+次のどれかを変えるときは、縁泉GAS と共通ライブラリも同じ変更に合わせて直します(縁泉_改プロジェクトの作業)。
+
+- 上の列の名前、並び、列の追加・削除(`Code.gs` の `BOOK_COLS` / `NOTE_COLS`)
+- `status` の日本語(`Code.gs` の `STATUS`。とくに `読了`)
+- `finishedAt` と `date` の書き方(`yyyy-mm-dd`)
+- `json` の `isbn13`、`itemId`、`cover` の名前と意味
+- シートの名前 `books` / `notes`
+
+列を後ろに足すだけなら、見出しの名前で読んでいる相手は壊れませんが、`json` が最後の列でなくなるので、`Code.gs` の `last` の扱いも合わせて確かめてください。
