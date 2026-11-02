@@ -140,6 +140,10 @@ test('読みたいの貼り付け: 縁泉などから来るISBN・ASIN・書名�
   assert.equal(r[3].title, '利己的な遺伝子');
   assert.deepEqual([r[4].isbn, r[4].title, r[4].author], ['9784152098703', '三体', '劉慈欣']);
   assert.deepEqual([r[5].asin, r[5].title, r[5].author], ['B0BQ7F7Q5Z', '知の編集術', '松岡正剛']);
+  // 見出し行は飛ばし、ハイフン付きのISBN-10も読む
+  const h = parseWantText('ISBN\t書名\t著者\n4-06-274868-1\t銀河英雄伝説\t田中芳樹');
+  assert.equal(h.length, 1);
+  assert.deepEqual([h[0].isbn, h[0].title, h[0].author], ['4062748681', '銀河英雄伝説', '田中芳樹']);
 });
 
 import { summarize } from '../js/calil.js';

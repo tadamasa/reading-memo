@@ -31,6 +31,9 @@ function splitAuthor(s) {
   return m ? { title: m[1].trim(), author: m[2].replace(/\s*(?:著|編|訳)$/, '').trim() } : { title: s, author: '' };
 }
 
+// 一覧の見出し行(「ISBN	書名	著者」など)
+const HEADER_CELL = /^(?:ISBN(?:-?1[03])?|ASIN|itemId|id|書名|タイトル|title|著者|作者|author|出版社|publisher|登録日|読了日|状態|status|No\.?|番号)$/i;
+
 // 表計算ソフトから貼った行(タブ区切り): ISBN・ASIN・書名・著者の列を見分ける
 function fromCells(raw) {
   const cells = raw.split('\t').map(c => c.replace(/\s+/g, ' ').trim()).filter(Boolean);
@@ -38,8 +41,9 @@ function fromCells(raw) {
   const texts = [];
   for (const cell of cells) {
     const plain = cell.replace(/^ISBN[:：]?\s*/i, '');
-    if (!c.isbn && ISBN13.test(plain) && plain.replace(/[-\s]/g, '').length === 13) c.isbn = plain.replace(/[-\s]/g, '');
-    else if (!c.isbn && /^\d{9}[\dX]$/.test(plain)) c.isbn = plain;
+    const digits = plain.replace(/[-\s]/g, '');
+    if (!c.isbn && /^97[89]\d{10}$/.test(digits)) c.isbn = digits;
+    else if (!c.isbn && /^\d{9}[\dX]$/i.test(digits)) c.isbn = digits.toUpperCase();
     else if (!c.asin && /^B0[0-9A-Z]{8}$/.test(cell)) c.asin = cell;
     else if (!c.asin && AMAZON.test(cell)) c.asin = cell.match(AMAZON)[1].toUpperCase();
     else if (!/^[\d\s./:-]+$/.test(cell) && !NOISE.test(cell)) texts.push(cell);
@@ -53,7 +57,9 @@ export function parseWantText(text) {
   const out = [];
   let last = null;
   for (const raw of String(text || '').split(/\r?\n/)) {
-    if (raw.includes('\t') && raw.split('\t').some(c => c.trim())) {
+    const cells = raw.split('\t').map(c => c.trim()).filter(Boolean);
+    if (raw.includes('\t') && cells.length) {
+      if (cells.every(c => HEADER_CELL.test(c))) continue;
       last = fromCells(raw);
       out.push(last);
       continue;
