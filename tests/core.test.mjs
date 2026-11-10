@@ -207,6 +207,27 @@ test('読書ハブ: 新しい方を残し、差分だけ返し、ページを分
   assert.equal(got, 1102); assert.equal(pages, 3);
 });
 
+test('読書ハブ: さくら用合言葉は追加・更新でき、削除はできず、URLパラメータでも通る', () => {
+  const hub = loadHub();
+  hub.setupSakura();
+  const s = hub.sakuraToken();
+  assert.ok(s);
+  // 本文の token で本を追加できる
+  let r = hub.post({ token: s, since: 0, books: [{ id: 's1', mtime: 10, data: { id: 's1', title: 'さくら登録', status: 'want' } }] });
+  assert.equal(r.ok, true); assert.equal(r.books.length, 1);
+  // URLパラメータ(?token=)でも通る(本文に token がなくてよい)
+  r = hub.postQ({ since: 0, books: [{ id: 's2', mtime: 10, data: { id: 's2', title: 'パラメータ経由', status: 'want' } }] }, { token: s });
+  assert.equal(r.ok, true);
+  // さくら用では削除を受け付けない(端末用では従来どおり削除できる)
+  hub.post({ token: s, since: 0, books: [{ id: 's1', mtime: 99, deleted: true }] });
+  r = hub.post({ token: s, since: 0 });
+  assert.equal(r.books.find(b => b.id === 's1').deleted, false);
+  // 端末用の合言葉は従来どおり(本文・パラメータの両方)
+  assert.equal(hub.post({ token: hub.token, since: 0 }).ok, true);
+  assert.equal(hub.postQ({ since: 0 }, { token: hub.token }).ok, true);
+  assert.equal(hub.postQ({ since: 0 }, { token: 'x' }).error, 'unauthorized');
+});
+
 import { isIsbnBarcode } from '../js/scanner.js';
 test('ISBNのバーコードだけを受け付ける', () => {
   assert.equal(isIsbnBarcode('9784334037437'), true);

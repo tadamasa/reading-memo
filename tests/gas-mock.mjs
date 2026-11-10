@@ -41,6 +41,9 @@ export function loadHub() {
     token: props.TOKEN,
     sheets,
     post: body => JSON.parse(ctx.doPost({ postData: { contents: JSON.stringify(body) } }).text),
+    postQ: (body, parameter) => JSON.parse(ctx.doPost({ postData: { contents: JSON.stringify(body) }, parameter }).text),
+    setupSakura: () => ctx.setupSakura(),
+    sakuraToken: () => props.SAKURA_TOKEN,
     readingNotesOn: d => ctx.readingNotesOn(d),
   };
 }
