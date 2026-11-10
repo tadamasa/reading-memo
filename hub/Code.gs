@@ -24,6 +24,17 @@ function setup() {
   Logger.log('合言葉: ' + props.getProperty('TOKEN'));
 }
 
+// さくら(Muse)専用の合言葉を発行する。端末用の合言葉(TOKEN)とは別物で、
+// スクリプトプロパティの SAKURA_TOKEN を消せば、端末の同期に影響なくさくらだけ止められる。
+// さくら用の合言葉では、本・メモの追加と更新はできるが、削除は受け付けない。
+function setupSakura() {
+  const props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('SAKURA_TOKEN')) props.setProperty('SAKURA_TOKEN', Utilities.getUuid().replace(/-/g, ''));
+  sheet_('books', BOOK_COLS);
+  sheet_('notes', NOTE_COLS);
+  Logger.log('さくら用合言葉: ' + props.getProperty('SAKURA_TOKEN'));
+}
+
 function doGet() {
   return json_({ ok: true, app: 'reading-hub' });
 }
@@ -33,8 +44,11 @@ function doGet() {
 function doPost(e) {
   let req;
   try { req = JSON.parse(e.postData.contents); } catch (err) { return json_({ ok: false, error: 'bad json' }); }
-  const token = PropertiesService.getScriptProperties().getProperty('TOKEN');
-  if (!token || req.token !== token) return json_({ ok: false, error: 'unauthorized' });
+  // 合言葉は本文の token でも、URLのパラメータ(?token=)でも受け付ける
+  const propsAuth = PropertiesService.getScriptProperties();
+  const given = req.token || (e.parameter && e.parameter.token) || '';
+  const isSakura = !!given && given === propsAuth.getProperty('SAKURA_TOKEN');
+  if (!given || (!isSakura && given !== propsAuth.getProperty('TOKEN'))) return json_({ ok: false, error: 'unauthorized' });
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
@@ -53,6 +67,7 @@ function doPost(e) {
       let changed = false;
       for (const item of req[name] || []) {
         if (!item || !item.id) continue;
+        if (isSakura && item.deleted) continue; // さくら用合言葉では削除を受け付けない
         const i = index[item.id];
         if (i !== undefined && Number(values[i][2]) > Number(item.mtime || 0)) continue; // 表のほうが新しい
         rev += 1;
