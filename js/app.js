@@ -1058,7 +1058,7 @@ function showKindlePlus(book) {
     <p style="margin:0"><b>${esc(st.label)}</b>${st.status ? ` <span class="small muted">${esc(fmtDate(book.ku.at))}確認${st.stale ? `・${st.days}日前なので確かめ直すと安心です` : ''}</span>` : ''}</p>
     <div class="note__tools"><a class="btn btn--small btn--tinted" id="ku-open" href="${esc(kindlePlusUrl(book))}" target="_blank" rel="noopener">読み放題の棚で探す</a><a class="btn btn--small btn--plain" href="${esc(kindleEditionUrl(book))}" target="_blank" rel="noopener">Kindle版を探す</a></div>
     <div class="note__tools"><span class="small muted">結果:</span>${mark('yes', '対象だった')}${mark('no', '対象外')}${mark('none', 'Kindle版なし')}${st.status ? '<button class="btn btn--small btn--plain" data-ku="">消す</button>' : ''}</div></div>
-    <p class="list-section__footer">Amazonの読み放題の棚を、書名と著者で探すページを開きます。この本が出ていれば対象です。対象は時期によって入れ替わるので、確認した日も残します。</p>`;
+    <p class="list-section__footer">Amazonの読み放題の棚を、書名と著者で探すページを開きます。この本に読み放題のマークが付いていれば対象です(広告の枠は絞り込みの外から出ることがあります)。対象は時期によって入れ替わるので、確認した日も残します。</p>`;
   box.querySelectorAll('[data-ku]').forEach(btn => btn.addEventListener('click', async () => {
     const v = btn.dataset.ku;
     book.ku = v ? { status: v, at: new Date().toISOString() } : null;
