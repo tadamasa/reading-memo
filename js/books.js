@@ -331,11 +331,14 @@ export function kindleEditionUrl(book) {
 }
 // 対象は入れ替わるので、確認から日が経った記録は「確かめ直す」を促す
 export const KINDLE_PLUS_STALE_DAYS = 30;
+// 読書ハブの表(kindlePlus 列)と外部APIでも同じ言葉を使う
+export const KINDLE_PLUS_LABEL = { yes: '対象', no: '対象外', none: 'Kindle版なし', check: '調べる' };
 export function kindlePlusState(ku, now = Date.now()) {
   if (!ku || !ku.status || !ku.at) return { status: null, label: '未確認', days: null, stale: false };
   const days = Math.floor((now - Date.parse(ku.at)) / 864e5);
-  const label = { yes: '読み放題の対象', no: '対象外', none: 'Kindle版なし' }[ku.status] || '未確認';
-  return { status: ku.status, label, days, stale: days >= KINDLE_PLUS_STALE_DAYS };
+  const label = KINDLE_PLUS_LABEL[ku.status] || '未確認';
+  // 「調べる」はこれから確かめる印なので、古くなったとは言わない
+  return { status: ku.status, label, days, stale: ku.status !== 'check' && days >= KINDLE_PLUS_STALE_DAYS };
 }
 
 function isbn10Check(isbn13) {

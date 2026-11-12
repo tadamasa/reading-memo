@@ -32,6 +32,28 @@ URLと合言葉を知っている人は読み書きできるので、他の人�
 4. さくら用の合言葉では、本やメモの追加・更新はできますが、**削除はできません**。
 5. さくらのアクセスを止めたいときは、Apps Script の「プロジェクトの設定」→「スクリプト プロパティ」から `SAKURA_TOKEN` を削除します。端末の同期には影響しません。
 
+## 外部から本を追加し、Kindle+ を切り替える(API用合言葉)
+
+ほかのAIやiOSショートカットから、**本の追加** と **Kindle+(読み放題)の切り替え** だけをするための、同期用とは別の合言葉です。アイデアハブの投稿用合言葉と同じ考え方で、URLに付けたときだけ通ります。
+
+1. 新しい Code.gs を貼って保存し、関数の選択欄で `setupApi` を選んで「実行」します。実行ログに「API用合言葉: …」が出ます。
+2. 「デプロイを管理」→ 鉛筆 → バージョン「新バージョン」→「デプロイ」。URLは変わりません。
+3. 送り方(本文は次のどちらか一つだけ):
+
+```
+POST {ハブのURL}?token=<API用合言葉>
+Content-Type: text/plain;charset=utf-8
+
+{"addBook": {"title": "動的平衡", "author": "福岡伸一", "isbn13": "9784334037437", "kindlePlus": "調べる", "wantReason": "さくらのおすすめ"}}
+{"setKindlePlus": {"isbn13": "9784334037437", "status": "対象"}}
+```
+
+- `addBook`: `title` は必須。`author`、`isbn13`(ISBN-10 も可)、`itemId`(ASIN)、`status`(`want` 既定 / `reading` / `done` / `stopped`)、`wantReason`、`kindlePlus` は任意。同じISBN・ASIN(どちらもなければ同じ書名)の本があれば足さずに `{"ok": true, "existed": true, "id": …}` を返します(`kindlePlus` があればそれだけ切り替えます)。
+- `setKindlePlus`: 本は `id` → `isbn13` → `itemId` → `title`(空白・全角半角を無視した完全一致)の順で探します。`status` は `対象` / `対象外` / `Kindle版なし` / `調べる`(`yes` / `no` / `none` / `check` でも可)、空文字で記録を消します。見つからなければ `not found`、同じ書名が2冊以上なら `ambiguous` と候補を返します。
+- 表に書くだけなので、アプリには次に開いたときの同期で入ります。
+- できないこと: 本・メモの読み取り(同期)、削除、メモの追加。本文に `token` を入れても、ほかの項目を混ぜても `unauthorized` です。同期用の合言葉をURLに付けても、この使い方にはなりません。
+- 止める・作り直すときは、「スクリプト プロパティ」で `API_TOKEN` を消します(作り直すならそのあと `setupApi`)。同期とさくらには影響しません。
+
 ## スクリプトを新しくするとき
 
 Code.gs を貼り替えて保存したら、「デプロイ」→「デプロイを管理」→ 鉛筆の印 → バージョン「新バージョン」→「デプロイ」。URLは変わりません。
@@ -75,7 +97,9 @@ function readingNotesOn(date) { // date: '2026-10-29'
 
 ### 約束になっている列
 
-`books`(この並び): `id, rev, mtime, deleted, title, author, status, category, score, finishedAt, json`
+`books`(この並び): `id, rev, mtime, deleted, title, author, status, category, score, finishedAt, json, kindlePlus, kindlePlusAt`
+
+`kindlePlus`(`対象` / `対象外` / `Kindle版なし` / `調べる`、未確認は空)と `kindlePlusAt`(確かめた日 `yyyy-mm-dd`)は 2026-11 に `json` の後ろへ足した列です。古い表は、新しい Code.gs が最初に動いたときに見出しを足し、今ある本の分も埋めます。`json` が最後の列ではなくなったので、`json` も見出しの名前で探してください。
 
 | 列 | 中身 | 読んでいる相手 |
 |---|---|---|

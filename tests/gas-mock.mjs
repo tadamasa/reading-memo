@@ -31,7 +31,7 @@ export function loadHub() {
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => props[k] ?? null, setProperty: (k, v) => { props[k] = String(v); } }) },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
     ContentService: { createTextOutput: s => ({ text: s, setMimeType() { return this; } }), MimeType: { JSON: 'json' } },
-    Utilities: { getUuid: () => '1234-5678-abcd' },
+    Utilities: { getUuid: () => `${Math.random().toString(16).slice(2)}-x` },
     Logger: { log() {} },
   };
   vm.createContext(ctx);
@@ -44,6 +44,9 @@ export function loadHub() {
     postQ: (body, parameter) => JSON.parse(ctx.doPost({ postData: { contents: JSON.stringify(body) }, parameter }).text),
     setupSakura: () => ctx.setupSakura(),
     sakuraToken: () => props.SAKURA_TOKEN,
+    setupApi: () => ctx.setupApi(),
+    apiToken: () => props.API_TOKEN,
+    props,
     readingNotesOn: d => ctx.readingNotesOn(d),
   };
 }

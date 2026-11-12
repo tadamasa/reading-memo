@@ -244,6 +244,70 @@ test('Kindle+: 読み放題の棚だけを書名と著者で探し、確認か�
   assert.equal(new URL(kindleEditionUrl(book)).searchParams.get('i'), 'digital-text');
   assert.equal(kindlePlusState(null).label, '未確認');
   const now = Date.parse('2026-11-12T00:00:00Z');
-  assert.deepEqual(kindlePlusState({ status: 'yes', at: '2026-11-01T00:00:00Z' }, now), { status: 'yes', label: '読み放題の対象', days: 11, stale: false });
+  assert.deepEqual(kindlePlusState({ status: 'yes', at: '2026-11-01T00:00:00Z' }, now), { status: 'yes', label: '対象', days: 11, stale: false });
   assert.equal(kindlePlusState({ status: 'no', at: '2026-10-01T00:00:00Z' }, now).stale, true);
+});
+
+test('読書ハブ: Kindle+ の列が表に出て、古い表には見出しを足して埋める', () => {
+  const hub = loadHub();
+  const t = hub.token;
+  hub.post({ token: t, since: 0, books: [{ id: 'k1', mtime: 10, data: { id: 'k1', title: '天冥の標', status: 'want', ku: { status: 'check', at: '2026-11-12T01:00:00Z' } } }] });
+  const sh = hub.sheets.get('books');
+  const head = sh.rows[0];
+  assert.deepEqual(head.slice(-3), ['json', 'kindlePlus', 'kindlePlusAt']);
+  assert.equal(sh.rows[1][head.indexOf('kindlePlus')], '調べる');
+  assert.equal(sh.rows[1][head.indexOf('kindlePlusAt')], '2026-11-12');
+  // json の後ろに列が増えても、アプリは json を受け取れる
+  assert.equal(hub.post({ token: t, since: 0 }).books[0].data.ku.status, 'check');
+  // 古い表(見出しが json まで)を模して、開いたときに列が足され埋まるか
+  sh.rows.forEach(r => r.splice(head.indexOf('kindlePlus')));
+  hub.post({ token: t, since: 0 });
+  assert.equal(sh.rows[0][head.indexOf('kindlePlus')], 'kindlePlus');
+  assert.equal(sh.rows[1][head.indexOf('kindlePlus')], '調べる');
+});
+
+test('読書ハブ: API用合言葉はURLでだけ通り、本の追加とKindle+の切り替えしかできない', () => {
+  const hub = loadHub();
+  hub.setupApi();
+  const a = hub.apiToken();
+  assert.ok(a && a !== hub.token);
+  // 本の追加(ISBN-10 は 13 桁に直る)
+  let r = hub.postQ({ addBook: { title: '動的平衡', author: '福岡伸一', isbn: '4334037437', kindlePlus: '調べる', wantReason: 'さくらのおすすめ' } }, { token: a });
+  assert.equal(r.ok, true); assert.equal(r.existed, false); assert.equal(r.kindlePlus, '調べる');
+  const id = r.id;
+  let book = hub.post({ token: hub.token, since: 0 }).books.find(b => b.id === id).data;
+  assert.equal(book.isbn13, '9784334037437'); assert.equal(book.status, 'want'); assert.equal(book.ku.status, 'check'); assert.equal(book.wantReason, 'さくらのおすすめ');
+  // 同じISBNは足さない
+  r = hub.postQ({ addBook: { title: '動的平衡(新版)', isbn13: '9784334037437' } }, { token: a });
+  assert.equal(r.existed, true); assert.equal(r.id, id);
+  // Kindle+ の切り替え(ISBN・書名・日本語/英語のどちらでも)
+  r = hub.postQ({ setKindlePlus: { isbn13: '9784334037437', status: '対象' } }, { token: a });
+  assert.equal(r.ok, true); assert.equal(r.kindlePlus, '対象');
+  r = hub.postQ({ setKindlePlus: { title: '動的 平衡', status: 'no' } }, { token: a });
+  assert.equal(r.kindlePlus, '対象外');
+  book = hub.post({ token: hub.token, since: 0 }).books.find(b => b.id === id).data;
+  assert.equal(book.ku.status, 'no');
+  assert.equal(hub.sheets.get('books').rows[1][hub.sheets.get('books').rows[0].indexOf('kindlePlus')], '対象外');
+  // 記録を消す
+  assert.equal(hub.postQ({ setKindlePlus: { id, status: '' } }, { token: a }).kindlePlus, '');
+  // 見つからない・あいまい・知らない値
+  assert.equal(hub.postQ({ setKindlePlus: { title: 'ない本', status: '対象' } }, { token: a }).error, 'not found');
+  hub.postQ({ addBook: { title: '同名' } }, { token: a });
+  hub.post({ token: hub.token, books: [{ id: 'd2', mtime: Date.now(), data: { id: 'd2', title: '同名', status: 'want' } }] });
+  assert.equal(hub.postQ({ setKindlePlus: { title: '同名', status: '対象' } }, { token: a }).error, 'ambiguous');
+  assert.equal(hub.postQ({ setKindlePlus: { id, status: 'たぶん' } }, { token: a }).error, 'bad status');
+  // できないこと: 同期(読み取り)、本文の token、ほかの命令を混ぜる
+  assert.equal(hub.postQ({ since: 0 }, { token: a }).error, 'unauthorized');
+  assert.equal(hub.post({ token: a, since: 0 }).error, 'unauthorized');
+  assert.equal(hub.post({ token: a, addBook: { title: 'x' } }).error, 'unauthorized');
+  assert.equal(hub.postQ({ addBook: { title: 'x' }, books: [{ id: 'z', deleted: true }] }, { token: a }).error, 'unauthorized');
+  // API用合言葉を消せば止まる
+  delete hub.props.API_TOKEN;
+  assert.equal(hub.postQ({ addBook: { title: 'y' } }, { token: a }).error, 'unauthorized');
+});
+
+test('Kindle+: 「調べる」は日が経っても古いとは言わない', () => {
+  const now = Date.parse('2026-12-31T00:00:00Z');
+  assert.deepEqual(kindlePlusState({ status: 'check', at: '2026-10-01T00:00:00Z' }, now).stale, false);
+  assert.equal(kindlePlusState({ status: 'check', at: '2026-10-01T00:00:00Z' }, now).label, '調べる');
 });
