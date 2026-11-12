@@ -314,6 +314,33 @@ export function amazonUrl(book) {
   return id ? `https://www.amazon.co.jp/dp/${id}` : `https://www.amazon.co.jp/s?k=${encodeURIComponent([shortTitle(book.title), firstAuthor(book.author)].filter(Boolean).join(' '))}&i=stripbooks`;
 }
 
+// ---------- Kindle+(読み放題) ----------
+// Amazonには読み放題の対象かを調べる無料の公開APIがない(PA-APIは売上実績が要る)。読み放題の棚
+// (Kindleストア 2250738051 の下の node 3197885051)の中だけを書名と著者で探すページを開き、結果は本人が記録する。
+// 紙の本のISBNとKindle版のASINは別の番号なので、ISBNではなく書名と著者で探す。
+export const KINDLE_PLUS_NODE = '3197885051';
+function kindleQuery(book) {
+  return encodeURIComponent([shortTitle(book.title), firstAuthor(book.author)].filter(Boolean).join(' '));
+}
+export function kindlePlusUrl(book) {
+  return `https://www.amazon.co.jp/s?k=${kindleQuery(book)}&rh=n%3A${KINDLE_PLUS_NODE}`;
+}
+// 読み放題の棚で見つからないとき、そもそもKindle版があるかを確かめる
+export function kindleEditionUrl(book) {
+  return `https://www.amazon.co.jp/s?k=${kindleQuery(book)}&i=digital-text`;
+}
+// 対象は入れ替わるので、確認から日が経った記録は「確かめ直す」を促す
+export const KINDLE_PLUS_STALE_DAYS = 30;
+// 読書ハブの表(kindlePlus 列)と外部APIでも同じ言葉を使う
+export const KINDLE_PLUS_LABEL = { yes: '対象', no: '対象外', none: 'Kindle版なし', check: '調べる' };
+export function kindlePlusState(ku, now = Date.now()) {
+  if (!ku || !ku.status || !ku.at) return { status: null, label: '未確認', days: null, stale: false };
+  const days = Math.floor((now - Date.parse(ku.at)) / 864e5);
+  const label = KINDLE_PLUS_LABEL[ku.status] || '未確認';
+  // 「調べる」はこれから確かめる印なので、古くなったとは言わない
+  return { status: ku.status, label, days, stale: ku.status !== 'check' && days >= KINDLE_PLUS_STALE_DAYS };
+}
+
 function isbn10Check(isbn13) {
   const core = isbn13.slice(3, 12);
   let sum = 0;

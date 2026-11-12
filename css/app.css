@@ -95,7 +95,7 @@ svg.ic { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-wid
 #summary-more { margin-top: var(--space-1); padding-left: 0; }
 
 /* 本棚の並び順 */
-.sort-bar { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4) 0; font-size: 15px; }
+.sort-bar { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4) 0; font-size: 15px; flex-wrap: wrap; }
 .sort-bar label { color: var(--color-label-secondary); }
 .sort-bar select { min-height: var(--hit); border: none; background: transparent; color: var(--color-accent); font-size: 15px; }
 .sort-bar .btn { margin-left: auto; }
