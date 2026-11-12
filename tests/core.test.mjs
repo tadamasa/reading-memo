@@ -234,3 +234,16 @@ test('ISBNのバーコードだけを受け付ける', () => {
   assert.equal(isIsbnBarcode('9784334037438'), false); // 検査数字違い
   assert.equal(isIsbnBarcode('1920036008001'), false); // 2段目の価格コード
 });
+
+import { kindlePlusUrl, kindleEditionUrl, kindlePlusState, KINDLE_PLUS_NODE } from '../js/books.js';
+test('Kindle+: 読み放題の棚だけを書名と著者で探し、確認から30日で古いとみなす', () => {
+  const book = { title: '犯罪精神医学入門 人はなぜ人を殺せるのか (中公新書)', author: '福島章', isbn13: '9784121017963' };
+  const u = new URL(kindlePlusUrl(book));
+  assert.equal(u.searchParams.get('rh'), `n:${KINDLE_PLUS_NODE}`);
+  assert.equal(u.searchParams.get('k'), '犯罪精神医学入門 福島章');
+  assert.equal(new URL(kindleEditionUrl(book)).searchParams.get('i'), 'digital-text');
+  assert.equal(kindlePlusState(null).label, '未確認');
+  const now = Date.parse('2026-11-12T00:00:00Z');
+  assert.deepEqual(kindlePlusState({ status: 'yes', at: '2026-11-01T00:00:00Z' }, now), { status: 'yes', label: '読み放題の対象', days: 11, stale: false });
+  assert.equal(kindlePlusState({ status: 'no', at: '2026-10-01T00:00:00Z' }, now).stale, true);
+});

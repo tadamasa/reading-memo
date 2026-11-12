@@ -7,7 +7,7 @@ import { LENSES, buildDiscoverPrompt, parseDiscoverResult, amazonSearchUrl } fro
 import { parseWantText, WANT_SOURCES } from './wantimport.js';
 import { checkLibrary } from './calil.js';
 import { statsHtml, attachTooltips, scoreOf } from './stats.js';
-import { parseNdlItems, searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, bookSummary, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks } from './books.js';
+import { parseNdlItems, searchBooks, ndlSubjects, normalizeIsbn, coverCandidates, googleCover, bookSummary, setBooksKey, isbn13to10, authorWorks, wikiSummary, relatedLinks, kindlePlusUrl, kindleEditionUrl, kindlePlusState } from './books.js';
 import * as gemini from './gemini.js';
 import { exportData, importData } from './backup.js';
 import * as sync from './sync.js';
@@ -751,7 +751,7 @@ async function checkBooksAtLibrary(books) {
 
 function wantLabel(b) {
   const src = (WANT_SOURCES.find(([k]) => k === (b.wantSource || '')) || [])[1];
-  return [b.wantSource ? src : '', b.library ? `図書館: ${b.library.status}` : ''].filter(Boolean).join(' ・ ');
+  return [b.wantSource ? src : '', b.library ? `図書館: ${b.library.status}` : '', b.ku && b.ku.status === 'yes' ? 'Kindle+対象' : ''].filter(Boolean).join(' ・ ');
 }
 
 async function addBook(info, format) {
@@ -802,6 +802,7 @@ function renderBook(id) {
 
     <div class="pane" data-pane-body="book" ${bookPane === 'book' ? '' : 'hidden'}>
     ${book.status === 'want' && book.isbn13 ? `<section class="list-section"><h2 class="list-section__header">図書館</h2><div id="library"></div></section>` : ''}
+    ${book.status === 'want' ? `<section class="list-section"><h2 class="list-section__header">Kindle+ 読み放題</h2><div id="kindle-plus"></div></section>` : ''}
     <div class="card record">
       <div class="record__grid">
         <label class="mini"><span>状態</span><select id="b-status">${Object.entries(STATUS_LABEL).map(([k, l]) => `<option value="${k}" ${book.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -885,6 +886,7 @@ function renderBook(id) {
   const wsrc = document.getElementById('b-wsrc');
   if (wsrc) wsrc.addEventListener('change', async () => { book.wantSource = wsrc.value || null; await saveBook(book); toast('入手先を保存しました'); });
   if (book.status === 'want' && book.isbn13) showLibrary(book);
+  if (book.status === 'want') showKindlePlus(book);
   document.getElementById('b-cat').addEventListener('change', async e => {
     book.category = e.target.value || null;
     book.categoryBy = book.category ? 'user' : null;
@@ -1044,6 +1046,26 @@ async function showLibrary(book, force = false) {
     <div class="note__tools">${L.reserveurl ? `<a class="btn btn--small btn--tinted" href="${esc(L.reserveurl)}" target="_blank" rel="noopener">予約ページを開く</a>` : ''}<button class="btn btn--small btn--plain" id="lib-refresh">確認し直す</button></div></div>
     <p class="list-section__footer">カーリルの情報です(${fmtDate(L.at)}確認)。</p>`;
   document.getElementById('lib-refresh').addEventListener('click', () => showLibrary(book, true));
+}
+
+// Kindle+(読み放題)の対象か。Amazonを自動で調べる手段がないので、読み放題の棚だけを探すページを開き、結果を本人が記録する。
+function showKindlePlus(book) {
+  const box = document.getElementById('kindle-plus');
+  if (!box) return;
+  const st = kindlePlusState(book.ku);
+  const mark = (v, l) => `<button class="btn btn--small ${st.status === v ? 'btn--tinted' : 'btn--plain'}" data-ku="${v}" aria-pressed="${st.status === v}">${l}</button>`;
+  box.innerHTML = `<div class="card">
+    <p style="margin:0"><b>${esc(st.label)}</b>${st.status ? ` <span class="small muted">${esc(fmtDate(book.ku.at))}確認${st.stale ? `・${st.days}日前なので確かめ直すと安心です` : ''}</span>` : ''}</p>
+    <div class="note__tools"><a class="btn btn--small btn--tinted" id="ku-open" href="${esc(kindlePlusUrl(book))}" target="_blank" rel="noopener">読み放題の棚で探す</a><a class="btn btn--small btn--plain" href="${esc(kindleEditionUrl(book))}" target="_blank" rel="noopener">Kindle版を探す</a></div>
+    <div class="note__tools"><span class="small muted">結果:</span>${mark('yes', '対象だった')}${mark('no', '対象外')}${mark('none', 'Kindle版なし')}${st.status ? '<button class="btn btn--small btn--plain" data-ku="">消す</button>' : ''}</div></div>
+    <p class="list-section__footer">Amazonの読み放題の棚を、書名と著者で探すページを開きます。この本が出ていれば対象です。対象は時期によって入れ替わるので、確認した日も残します。</p>`;
+  box.querySelectorAll('[data-ku]').forEach(btn => btn.addEventListener('click', async () => {
+    const v = btn.dataset.ku;
+    book.ku = v ? { status: v, at: new Date().toISOString() } : null;
+    await saveBook(book);
+    showKindlePlus(book);
+    toast(v ? '記録しました' : '消しました');
+  }));
 }
 
 // ---------- 関連する本 ----------
